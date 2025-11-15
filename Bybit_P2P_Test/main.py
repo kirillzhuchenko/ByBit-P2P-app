@@ -16,8 +16,7 @@ async def fetch_ads_list(client: P2P): #### idk if I need this one.
     return ads_list["result"]["items"]
 
 async def fetch_wise_buy_ad(client: P2P):
-    ads_list = await client.get_ad_details(client=client,
-                                           itemId="1799865939992154112")
+    ads_list = await fetch_ads_list(client=client)
     wise_buy_ad = ads_list[0]
     return wise_buy_ad
 
