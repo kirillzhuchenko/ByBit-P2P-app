@@ -1,6 +1,40 @@
 from async_bybit_p2p import P2P
 import asyncio
 
+async def fetch_balance(client: P2P):
+    current_balance = await client.get_current_balance(
+        accountType="FUND",
+        currency="USDT"
+    )
+    present_balance = current_balance["result"]["balance"][2]["transferBalance"]
+    return present_balance
+
+async def fetch_ads_list(client: P2P): #### idk if I need this one.
+    # I probably have to update the same ad continuously to meet present Wise balance.
+    ads_list = await client.get_ads_list()
+    wise_ad = ads_list["result"]["items"][0]
+    return ads_list["result"]["items"]
+
+async def fetch_wise_buy_ad(client: P2P):
+    ads_list = await client.get_ad_details(client=client,
+                                           itemId="1799865939992154112")
+    wise_buy_ad = ads_list[0]
+    return wise_buy_ad
+
+async def fetch_wise_sell_ad(client: P2P):
+    ads_list = await fetch_ads_list(client=client)
+    wise_sell_ad = ads_list[1]
+    return wise_sell_ad
+
+# async def account_info(client: P2P): ######### idc if I need this one
+#     acc_info = await client.get_account_information()
+
+# async def main():
+#     client = P2P(testnet=False,
+#         api_key="74QhbEjvWnTr8Paiem",
+#         api_secret="q3mQXmiWMsK73Xu6MBfSfRIGfqPZchrEZgw1")
+
+
 
 async def main():
     api = P2P(
@@ -10,18 +44,31 @@ async def main():
     )
 
     # 1. Get current balance
-    print("Current balance:",
-        await api.get_current_balance(
-            accountType="FUND",
-            coin="USDT"
-        )
-    )
-    print("DONE")
+    # print("Current balance:",
+    #     await api.get_current_balance(
+    #         accountType="FUND",
+    #         coin="USDT"
+    #     )
+    # )
 
-    # 2. Get account information
-    print("Account information: ",
-        await api.get_account_information()
-    )
+    print("Current balance in USDT:",
+        await fetch_balance(client=api)
+          )
+
+    print("List of ads:",
+        await fetch_ads_list(client=api)
+          )
+
+    print("Wise buy ad is here: ",
+          await fetch_wise_buy_ad(client=api))
+
+    print("Wise sell ad is here: ",
+          await fetch_wise_sell_ad(client=api))
+
+    # # 2. Get account information
+    # print("Account information: ",
+    #     await api.get_account_information()
+    # )
 
     # 3. Get ads list
     print("Ads list: ",
@@ -31,7 +78,7 @@ async def main():
     # 4. Get ad detail
     print("Ad details",
         await api.get_ad_details(
-        itemId="1977382182365315072"
+        itemId="1799865939992154112"
     ))
 
 
@@ -174,6 +221,8 @@ async def main():
     )
 
     await api.close_session()
+
+
 
 
 
