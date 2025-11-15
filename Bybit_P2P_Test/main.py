@@ -6,7 +6,7 @@ async def main():
     api = P2P(
         testnet=False,
         api_key="74QhbEjvWnTr8Paiem",
-        api_secret="q3mQXmiWMsK73Xu6MBfSfRIGfqPZchrEZgw1"
+        api_secret=""
     )
 
     # 1. Get current balance
