@@ -3,8 +3,8 @@ import requests
 
 api = P2P(
     testnet=True,
-    api_key="IjQCejlmaMcdhbEhy8",
-    api_secret="zpjDLwnHzGkoU7Lo0axxIXYGd5t3UPhsUbEi"
+    api_key="IjQCecdhbEhy8",
+    api_secret="zEi"
 )
 
 # 1. Get current balance
