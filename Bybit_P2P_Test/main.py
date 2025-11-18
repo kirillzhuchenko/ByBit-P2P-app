@@ -190,6 +190,49 @@ async def remove_wise_sell_ad(client: P2P):
     )
     return sell_ad_rem
 
+"""THINK ABOUT USING DICTIONARY TO KEEP TRACK OF ALL INCOMING ORDERS"""
+async def fetch_list_of_sell_orders(client: P2P):
+    list_of_orders = await client.get_orders(
+        page=1,
+        size=10,
+        side=1
+    )
+    list = list_of_orders["result"]["items"]
+    return list
+
+"""FOR NOW IT ONLY KEEPS TRACK OF ONE ORDER"""
+async def fetch_bybit_counterparty_info(client: P2P):
+    orders = await fetch_list_of_sell_orders(client=client)
+
+    result = []
+    # for o in orders:
+    #     name = o["buyerRealName"]
+    #     amount = o["amount"]
+    #     result.append((name, amount))
+    for o in orders:
+        entry = {
+            "name": o["buyerRealName"],
+            "amount": o["amount"]
+        }
+        result.append(entry)
+
+    return result
+
+async def fetch_pending_sell_orders(client: P2P):
+    orders = await client.get_pending_orders(
+        side=1
+    )
+
+    result = []
+    for o in orders:
+        entry = {
+            "name": o["buyerRealName"],
+            "amount": o["amount"]
+        }
+        result.append(entry)
+
+    return result
+
 
 async def main():
     api = P2P(
@@ -259,33 +302,41 @@ async def main():
           await remove_wise_sell_ad(client=api)
           )
 
+    print("Last 10 sell orders:",
+          await fetch_list_of_sell_orders(client=api)
+          )
 
+    # buyer_name = await fetch_bybit_counterparty_info(client=api)
+    # buyer_amount = await fetch_bybit_counterparty_info(client=api)
+    # print("Buyer's name:", buyer_name[0])
+    # print("To be paid:", buyer_amount[1])
+    print("Counterparty info:",
+          await fetch_bybit_counterparty_info(client=api)
+          )
 
+    print("Pending orders:",
+          await fetch_pending_sell_orders(client=api)
+          )
 
-    # 7. Get Orders
-    print(await api.get_orders(
-        page=1,
-        size=10
-    ))
-    print("Orders above")
 
     # 8. Get Pending Orders
-    print(await api.get_pending_orders(
+    print("Pending orders:",
+          await api.get_pending_orders(
         page=1,
-        size=10
+        size=10,
     ))
 
     # 9. Get counterparty info
     print(await api.get_counterparty_info(
         originalUid="118027304",
-        orderId="1957477110433914880"
+        orderId="1989900781005369344"
     ))
 
     # 10. Get order details
-    print(await api.get_order_details(
-        orderId="1983711568542887936"
+    print("Test order details:",await api.get_order_details(
+        orderId="1990413015594516480"
     ))
-    print("order details last one")
+
 
     # 11. Release digital asset
     print(await api.release_assets(
