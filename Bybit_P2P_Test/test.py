@@ -3,8 +3,8 @@
 #
 # api = P2P(
 #     testnet=True,
-#     api_key="IjQCejlmaMcdhbEhy8",
-#     api_secret="zpjDLwnHzGkoU7Lo0axxIXYGd5t3UPhsUbEi"
+#     api_key="IjQEhy8",
+#     api_secret="zpGd5t3UPhsUbEi"
 # )
 #
 # # 1. Get current balance
