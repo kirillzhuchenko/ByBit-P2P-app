@@ -1,6 +1,7 @@
 from async_bybit_p2p import P2P
 import asyncio
 import os
+import uuid
 
 
 async def fetch_balance(client: P2P):
@@ -190,7 +191,7 @@ async def remove_wise_sell_ad(client: P2P):
     )
     return sell_ad_rem
 
-"""THINK ABOUT USING DICTIONARY TO KEEP TRACK OF ALL INCOMING ORDERS"""
+"""NEXT 2 func to be removed in the future, both are handled in fetch_pending_buy/sell_orders"""
 async def fetch_list_of_sell_orders(client: P2P):
     list_of_orders = await client.get_orders(
         page=1,
@@ -200,39 +201,132 @@ async def fetch_list_of_sell_orders(client: P2P):
     list = list_of_orders["result"]["items"]
     return list
 
-"""FOR NOW IT ONLY KEEPS TRACK OF ONE ORDER"""
+
 async def fetch_bybit_counterparty_info(client: P2P):
     orders = await fetch_list_of_sell_orders(client=client)
 
     result = []
-    # for o in orders:
-    #     name = o["buyerRealName"]
-    #     amount = o["amount"]
-    #     result.append((name, amount))
     for o in orders:
         entry = {
+            "order_id": o["id"],
             "name": o["buyerRealName"],
-            "amount": o["amount"]
+            "amount": o["amount"],
         }
         result.append(entry)
 
     return result
 
 async def fetch_pending_sell_orders(client: P2P):
-    orders = await client.get_pending_orders(
-        side=1
+    orders_raw = await client.get_pending_orders(
+        side=1,
+        page=1,
+        size=20
     )
+    orders = orders_raw["result"]["items"]
+
 
     result = []
     for o in orders:
         entry = {
+            "order_id": o["id"],
             "name": o["buyerRealName"],
-            "amount": o["amount"]
+            "amount": o["amount"],
         }
         result.append(entry)
 
     return result
 
+"""NEED THIS FUNC ONLY TO FETCH RECIPIENT'S DATA, NO PAYMENT METHOD FETCH AVAILABLE AT THIS MOMENT"""
+async def fetch_pending_buy_orders(client: P2P):
+    orders_raw = await client.get_pending_orders(
+        side=0,
+        page=1,
+        size=20
+    )
+    orders = orders_raw["result"]["items"]
+
+
+    result = []
+    for o in orders:
+        entry = {
+            "order_id": o["id"],
+            "name": o["sellerRealName"],
+            "amount": o["amount"],
+        }
+        result.append(entry)
+
+    return result
+
+
+"""REQUIRES MORE WORK ON THIS ONE"""
+async def release_assets(client: P2P):
+    action = await client.release_assets()
+    return action
+
+
+async def get_chat_message(client: P2P):
+    msg = await client.get_chat_messages(
+        orderId="1992070819939557376",
+        startMessageId=0,
+        size=100
+    )
+    return msg
+
+
+"""HAVE TO FIX IT SO THE FUNCTION WILL BE SENDING MESSAGES ONLY TO SELL ORDERS"""
+async def send_chat_message(client: P2P):
+    orders = await fetch_pending_buy_orders(client=client)
+
+    if not orders:
+        print("NO PENDING ORDERS FOUND")
+        return
+
+    for order in orders:
+        order_id = order["order_id"]
+        print(f"Sending message to {order_id}")  #see if i need this line of code
+
+        """HAVE TO ADD {wisetag} AND {payment_link} AFTER ADDING THEM MAIN.PY"""
+        try:
+            response = await client.send_chat_message(
+                message=f"Hello!\n"
+                        f"This order is handled by the p2p bot, please don't wait for the human's response.\n"
+                        "Please procced with the payment to IP ZHUCHENKO, LLC.\n"
+                        "Payment details are mentioned under the 'Pay' button, alternatively use one of the method bollow:\n"
+                        "Wisetag: @ipzhuchenkollc\n"
+                        "Payment link: {payment_link}",
+                contentType="str",
+                orderId=order_id,
+                msgUuid=uuid.uuid4().hex,
+            )
+            print("Response:", response)
+        except Exception as e:
+            print(f"Failed to send message to order {order_id} -> {e}")
+
+    print("All messages sent")
+
+
+    # for o in cid:
+    #     entry = {
+    #         "orderId": o["order_id"],
+    #     }
+    #     result.append(entry)
+    #
+    # msg = await client.send_chat_message(
+    #     message="Please disregard this message",
+    #     contentType="str",
+    #     orderId=result,
+    #     msgUuid=uuid.uuid4().hex
+    # )
+    # return msg
+
+
+# async def get_pending_order_details(client: P2P):
+#     order_details = await client.get_order_details(
+#         orderId=fetch_pending_buy_orders(client)[0]
+#     )
+#
+#
+#     return order_details
 
 async def main():
     api = P2P(
@@ -306,111 +400,116 @@ async def main():
           await fetch_list_of_sell_orders(client=api)
           )
 
-    # buyer_name = await fetch_bybit_counterparty_info(client=api)
-    # buyer_amount = await fetch_bybit_counterparty_info(client=api)
-    # print("Buyer's name:", buyer_name[0])
-    # print("To be paid:", buyer_amount[1])
     print("Counterparty info:",
           await fetch_bybit_counterparty_info(client=api)
           )
 
-    print("Pending orders:",
+    print("Fetch last 20 Pending sell orders:",
           await fetch_pending_sell_orders(client=api)
           )
 
+    print("Fetch last 20 Pending buy orders:",
+          await fetch_pending_buy_orders(client=api)
+          )
+
+    print("Chat message:",
+          await get_chat_message(client=api)
+          )
+
+    print("Message sent:",
+          await send_chat_message(client=api)
+          )
+
+
 
     # 8. Get Pending Orders
-    print("Pending orders:",
-          await api.get_pending_orders(
+    print("Pending orders:", await api.get_pending_orders(
+        side=0,
         page=1,
         size=10,
-    ))
+    )
+          )
 
     # 9. Get counterparty info
-    print(await api.get_counterparty_info(
-        originalUid="118027304",
-        orderId="1989900781005369344"
+    print("get info:", await api.get_counterparty_info(
+        originalUid="177871751",
+        orderId="1992070819939557376"
     ))
-
-    # 10. Get order details
-    print("Test order details:",await api.get_order_details(
-        orderId="1990413015594516480"
-    ))
-
 
     # 11. Release digital asset
     print(await api.release_assets(
         orderId="1234567890123456789"
     ))
 
-    # 12. Mark order as paid
-    print(await api.mark_as_paid(
-        orderId="1234567890123456789",
-        paymentType="123",
-        paymentId="5544"
-    ))
+    '''cannot use this one with USD on Wise, not sure about Revolut. Should be good with EUR'''
+    # # 12. Mark order as paid
+    # print(await api.mark_as_paid(
+    #     orderId="1234567890123456789",
+    #     paymentType="123",
+    #     paymentId="5544"
+    # ))
 
-    # 13. Get chat messages
-    print(await api.get_chat_messages(
-        orderId="1957477110433914880",
-        startMessageId=0,
-        size=100
-    ))
-    print("chat messages")
+    # # 13. Get chat messages
+    # print(await api.get_chat_messages(
+    #     orderId="1992070819939557376",
+    #     startMessageId=0,
+    #     size=100
+    # ))
+    # print("chat messages")
 
     # 14. Upload chat file
     print(await api.upload_chat_file(
         upload_file="D:/test.png"
     ))
 
-    # 15. Send chat message
-    import uuid
-    print(await api.send_chat_message(
-        message="Hello, please send funds to the bank account specified",
-        contentType="str",
-        orderId="1234567890123456789",
-        msgUuid=uuid.uuid4().hex
-    ))
+    # # 15. Send chat message
+    # import uuid
+    # print(await api.send_chat_message(
+    #     message="Please disregard this message",
+    #     contentType="str",
+    #     orderId="1234567890123456789",
+    #     msgUuid=uuid.uuid4().hex
+    # ))
 
-    # 16. Post new advertisement
-    print(await api.post_new_ad(
-        tokenId="USDT",
-        currencyId="RUB",
-        side="1",
-        priceType=1,
-        premium=90,
-        price=78.3,
-        minAmount=500,
-        maxAmount=3500000,
-        remark="Contact @kolya5544 on Telegram once you've paid.",
-        tradingPreferenceSet={
-                "hasUnPostAd": 0,
-                "isKyc": 1,
-                "isEmail": 0,
-                "isMobile": 0,
-                "hasRegisterTime": 0,
-                "registerTimeThreshold": 0,
-                "orderFinishNumberDay30": 0,
-                "completeRateDay30": "",
-                "nationalLimit": "",
-                "hasOrderFinishNumberDay30": 0,
-                "hasCompleteRateDay30": 0,
-                "hasNationalLimit": 0
-            },
-        paymentIds=["6558"],
-        quantity="25000",
-        paymentPeriod="15",
-        itemType="ORIGIN"
-    ))
+    # # 16. Post new advertisement
+    # print(await api.post_new_ad(
+    #     tokenId="USDT",
+    #     currencyId="RUB",
+    #     side="1",
+    #     priceType=1,
+    #     premium=90,
+    #     price=78.3,
+    #     minAmount=500,
+    #     maxAmount=3500000,
+    #     remark="Contact @kolya5544 on Telegram once you've paid.",
+    #     tradingPreferenceSet={
+    #             "hasUnPostAd": 0,
+    #             "isKyc": 1,
+    #             "isEmail": 0,
+    #             "isMobile": 0,
+    #             "hasRegisterTime": 0,
+    #             "registerTimeThreshold": 0,
+    #             "orderFinishNumberDay30": 0,
+    #             "completeRateDay30": "",
+    #             "nationalLimit": "",
+    #             "hasOrderFinishNumberDay30": 0,
+    #             "hasCompleteRateDay30": 0,
+    #             "hasNationalLimit": 0
+    #         },
+    #     paymentIds=["6558"],
+    #     quantity="25000",
+    #     paymentPeriod="15",
+    #     itemType="ORIGIN"
+    # ))
 
-    # 17. Get online advertisements list
-    print(await api.get_online_ads(
-        tokenId="USDT",
-        currencyId="RUB",
-        side="0",
-        payment=["1", "377"],
-        vaMaker=True
-    ))
+    # # 17. Get online advertisements list
+    # print(await api.get_online_ads(
+    #     tokenId="USDT",
+    #     currencyId="RUB",
+    #     side="0",
+    #     payment=["1", "377"],
+    #     vaMaker=True
+    # ))
 
     # 18. Get user payment
     print(
