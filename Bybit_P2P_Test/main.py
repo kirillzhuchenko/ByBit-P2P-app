@@ -224,7 +224,6 @@ async def fetch_pending_sell_orders(client: P2P):
     )
     orders = orders_raw["result"]["items"]
 
-
     result = []
     for o in orders:
         entry = {
@@ -263,7 +262,7 @@ async def release_assets(client: P2P):
     action = await client.release_assets()
     return action
 
-
+"""TO BE REMOVED IN THE FUTURE"""
 async def get_chat_message(client: P2P):
     msg = await client.get_chat_messages(
         orderId="1992070819939557376",
@@ -273,9 +272,9 @@ async def get_chat_message(client: P2P):
     return msg
 
 
-"""HAVE TO FIX IT SO THE FUNCTION WILL BE SENDING MESSAGES ONLY TO SELL ORDERS"""
+
 async def send_chat_message(client: P2P):
-    orders = await fetch_pending_buy_orders(client=client)
+    orders = await fetch_pending_sell_orders(client=client)
 
     if not orders:
         print("NO PENDING ORDERS FOUND")
@@ -284,16 +283,20 @@ async def send_chat_message(client: P2P):
     for order in orders:
         order_id = order["order_id"]
         print(f"Sending message to {order_id}")  #see if i need this line of code
-
+        payment_link = "not available at this time"
         """HAVE TO ADD {wisetag} AND {payment_link} AFTER ADDING THEM MAIN.PY"""
         try:
             response = await client.send_chat_message(
-                message=f"Hello!\n"
-                        f"This order is handled by the p2p bot, please don't wait for the human's response.\n"
-                        "Please procced with the payment to IP ZHUCHENKO, LLC.\n"
-                        "Payment details are mentioned under the 'Pay' button, alternatively use one of the method bollow:\n"
-                        "Wisetag: @ipzhuchenkollc\n"
-                        "Payment link: {payment_link}",
+                message=(f"Hello!\n"
+                        f"🤖This order is being processed automatically by our P2P bot — no need to wait for a human response🤖\n\n"
+                        f"Please procced with the payment to IP ZHUCHENKO, LLC💼.\n\n"
+                        f"❗IMPORTANT❗\n\n"
+                        f"  ✅The name on ByBit and Wise MUST match to complete the order.\n"
+                        f"  ✅Corporate transfers are accepted.\n\n"
+                        f"Payment details (also available under the Pay button):\n"
+                        f"  💸Wisetag: @ipzhuchenkollc\n"
+                        f"  💸Payment link: {payment_link}\n\n"
+                        f"📩If you have any questions, feel free to contact me on Telegram: @@DeFi_Capital📩"),
                 contentType="str",
                 orderId=order_id,
                 msgUuid=uuid.uuid4().hex,
@@ -305,28 +308,39 @@ async def send_chat_message(client: P2P):
     print("All messages sent")
 
 
-    # for o in cid:
+async def get_buy_order_id(client: P2P):
+
+    response = await fetch_pending_buy_orders(client=client)
+
+    result = []
+    for order in response:
+        entry = {
+            "orderId": order["order_id"],
+        }
+
+        result.append(entry)
+    return result
+
+""" HAve to work on this one a bit more"""
+async def get_pending_order_details(client: P2P):
+
+    response = await get_buy_order_id(client=client)
+    order_id = response[0]["orderId"]
+
+    resp = await client.get_order_details(
+        orderId=order_id
+    )
+
+    orders = response
+    # result = []
+    # for o in orders:
     #     entry = {
-    #         "orderId": o["order_id"],
+    #         "method": o["paymentType"],
+    #         "order_id": o["id"]
     #     }
     #     result.append(entry)
-    #
-    # msg = await client.send_chat_message(
-    #     message="Please disregard this message",
-    #     contentType="str",
-    #     orderId=result,
-    #     msgUuid=uuid.uuid4().hex
-    # )
-    # return msg
-
-
-# async def get_pending_order_details(client: P2P):
-#     order_details = await client.get_order_details(
-#         orderId=fetch_pending_buy_orders(client)[0]
-#     )
-#
-#
-#     return order_details
+    return resp
+    return result
 
 async def main():
     api = P2P(
@@ -419,6 +433,18 @@ async def main():
     print("Message sent:",
           await send_chat_message(client=api)
           )
+
+    """NEED to fix this!"""
+    print("Info:",
+          await get_pending_order_details(client=api)
+          )
+    resp = await get_buy_order_id(client=api)
+    ord = resp[0]
+    print("Buy order id:",
+          ord
+          )
+
+
 
 
 
