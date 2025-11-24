@@ -1,3 +1,5 @@
+from unittest import result
+
 from async_bybit_p2p import P2P
 import asyncio
 import os
@@ -307,7 +309,7 @@ async def send_chat_message(client: P2P):
 
     print("All messages sent")
 
-
+"""FETCHES BUY ORDERS, REMEMBER TO CHANGE IT TO FETCH SELL ORDERS"""
 async def get_buy_order_id(client: P2P):
 
     response = await fetch_pending_buy_orders(client=client)
@@ -319,28 +321,30 @@ async def get_buy_order_id(client: P2P):
         }
 
         result.append(entry)
+        # print("Order id: ", result)
     return result
 
-""" HAve to work on this one a bit more"""
-async def get_pending_order_details(client: P2P):
+"""FETCHES BUY ORDERS ATM, HAVE TO CHANGE IT TO SELL ORDERS"""
+async def get_pending_sell_order_details(client: P2P):
 
     response = await get_buy_order_id(client=client)
-    order_id = response[0]["orderId"]
 
-    resp = await client.get_order_details(
-        orderId=order_id
-    )
+    results = []
+    for item in response:
 
-    orders = response
-    # result = []
-    # for o in orders:
-    #     entry = {
-    #         "method": o["paymentType"],
-    #         "order_id": o["id"]
-    #     }
-    #     result.append(entry)
-    return resp
-    return result
+        order_id = item["orderId"]
+
+        resp = await client.get_order_details(orderId=order_id)
+        resp = resp["result"]
+
+        results.append({
+            "orderId": order_id,
+            "paymentType": resp["paymentType"],
+        })
+
+        return results
+
+
 
 async def main():
     api = P2P(
@@ -436,12 +440,7 @@ async def main():
 
     """NEED to fix this!"""
     print("Info:",
-          await get_pending_order_details(client=api)
-          )
-    resp = await get_buy_order_id(client=api)
-    ord = resp[0]
-    print("Buy order id:",
-          ord
+          await get_pending_sell_order_details(client=api)
           )
 
 
