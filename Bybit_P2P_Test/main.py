@@ -1,5 +1,3 @@
-from unittest import result
-
 from async_bybit_p2p import P2P
 import asyncio
 import os
@@ -237,7 +235,7 @@ async def fetch_pending_sell_orders(client: P2P):
 
     return result
 
-"""NEED THIS FUNC ONLY TO FETCH RECIPIENT'S DATA, NO PAYMENT METHOD FETCH AVAILABLE AT THIS MOMENT"""
+"""NEED THIS FUNC ONLY TO FETCH RECIPIENT'S DATA, FOR paymentType PLEASE REFER TO 'get_pending_sell_order_details()'"""
 async def fetch_pending_buy_orders(client: P2P):
     orders_raw = await client.get_pending_orders(
         side=0,
@@ -274,7 +272,6 @@ async def get_chat_message(client: P2P):
     return msg
 
 
-
 async def send_chat_message(client: P2P):
     orders = await fetch_pending_sell_orders(client=client)
 
@@ -285,6 +282,7 @@ async def send_chat_message(client: P2P):
     for order in orders:
         order_id = order["order_id"]
         print(f"Sending message to {order_id}")  #see if i need this line of code
+        account_link = "https://wise.com/pay/business/ipzhuchenkollc"
         payment_link = "not available at this time"
         """HAVE TO ADD {wisetag} AND {payment_link} AFTER ADDING THEM MAIN.PY"""
         try:
@@ -297,6 +295,7 @@ async def send_chat_message(client: P2P):
                         f"  ✅Corporate transfers are accepted.\n\n"
                         f"Payment details (also available under the Pay button):\n"
                         f"  💸Wisetag: @ipzhuchenkollc\n"
+                        f"  💸Account link: {account_link}\n"
                         f"  💸Payment link: {payment_link}\n\n"
                         f"📩If you have any questions, feel free to contact me on Telegram: @@DeFi_Capital📩"),
                 contentType="str",
@@ -310,6 +309,21 @@ async def send_chat_message(client: P2P):
     print("All messages sent")
 
 """FETCHES BUY ORDERS, REMEMBER TO CHANGE IT TO FETCH SELL ORDERS"""
+async def get_sell_order_id(client: P2P):
+
+    response = await fetch_pending_sell_orders(client=client)
+
+    result = []
+    for order in response:
+        entry = {
+            "orderId": order["order_id"],
+        }
+
+        result.append(entry)
+        # print("Order id: ", result)
+    return result
+
+
 async def get_buy_order_id(client: P2P):
 
     response = await fetch_pending_buy_orders(client=client)
@@ -327,23 +341,70 @@ async def get_buy_order_id(client: P2P):
 """FETCHES BUY ORDERS ATM, HAVE TO CHANGE IT TO SELL ORDERS"""
 async def get_pending_sell_order_details(client: P2P):
 
-    response = await get_buy_order_id(client=client)
+    orders_list = await get_sell_order_id(client=client)
 
-    results = []
-    for item in response:
+    if not orders_list:
+        print("NO PENDING SELL ORDERS FOUND")
+        return []  # no orders found
 
-        order_id = item["orderId"]
+    tasks = []
+    for order in orders_list:                                       #This code builds a list of coroutines but does NOT execute them yet
+        tasks.append(client.get_order_details(orderId=order["orderId"]))
 
-        resp = await client.get_order_details(orderId=order_id)
-        resp = resp["result"]
+    details = await asyncio.gather(*tasks, return_exceptions=True)  #'.gather' takes ALL waiting tasks, launches them together, waits until ALL
+                                                                    # complete and then returns results as a list in the same order as input
 
-        results.append({
-            "orderId": order_id,
-            "paymentType": resp["paymentType"],
+    result = []
+
+    for order, detail in zip(orders_list, details):                 # zip pairs each original order dict (order) with each API result (resp)
+        if isinstance(detail, Exception):                           # and combines them into the requested format
+            print(f"[ERROR] Failed API call for orderId {order['orderId']}: {detail}")
+            result.append({
+                "orderId": order["orderId"],
+                "error": str(detail)
+            })
+            continue
+
+        result.append({
+            "orderId": order["orderId"],
+            "paymentType": detail["result"]["paymentType"]
         })
 
-        return results
+    return result
 
+
+async def get_pending_buy_order_details(client: P2P):
+
+    orders_list = await get_buy_order_id(client=client)
+
+    if not orders_list:
+        print("NO PENDING BUY ORDERS FOUND")
+        return []  # no orders found
+
+    tasks = []
+    for order in orders_list:                                       #This code builds a list of coroutines but does NOT execute them yet
+        tasks.append(client.get_order_details(orderId=order["orderId"]))
+
+    details = await asyncio.gather(*tasks, return_exceptions=True)  #'.gather' takes ALL waiting tasks, launches them together, waits until ALL
+                                                                    # complete and then returns results as a list in the same order as input
+
+    result = []
+
+    for order, detail in zip(orders_list, details):                 # zip pairs each original order dict (order) with each API result (resp)
+        if isinstance(detail, Exception):                           # and combines them into the requested format
+            print(f"[ERROR] Failed API call for orderId {order['orderId']}: {detail}")
+            result.append({
+                "orderId": order["orderId"],
+                "error": str(detail)
+            })
+            continue
+
+        result.append({
+            "orderId": order["orderId"],
+            "paymentType": detail["result"]["paymentType"]
+        })
+
+    return result
 
 
 async def main():
@@ -439,8 +500,12 @@ async def main():
           )
 
     """NEED to fix this!"""
-    print("Info:",
+    print("Sell order Info:",
           await get_pending_sell_order_details(client=api)
+          )
+
+    print("Buy order Info:",
+          await get_pending_buy_order_details(client=api)
           )
 
 
