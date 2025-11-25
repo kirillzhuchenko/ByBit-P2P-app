@@ -527,9 +527,9 @@ async def main():
     ))
 
     # 11. Release digital asset
-    print(await api.release_assets(
-        orderId="1234567890123456789"
-    ))
+    # print(await api.release_assets(
+    #     orderId="1234567890123456789"
+    # ))
 
     '''cannot use this one with USD on Wise, not sure about Revolut. Should be good with EUR'''
     # # 12. Mark order as paid
@@ -548,9 +548,9 @@ async def main():
     # print("chat messages")
 
     # 14. Upload chat file
-    print(await api.upload_chat_file(
-        upload_file="D:/test.png"
-    ))
+    # print(await api.upload_chat_file(
+    #     upload_file="D:/test.png"
+    # ))
 
     # # 15. Send chat message
     # import uuid
