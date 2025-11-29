@@ -338,7 +338,7 @@ async def get_buy_order_id(client: P2P):
         # print("Order id: ", result)
     return result
 
-"""FETCHES BUY ORDERS ATM, HAVE TO CHANGE IT TO SELL ORDERS"""
+"""FOR SOME REASON RESPONSE WAS [{'orderId': '19920....', 'paymentType': 0}], WHEN 'paymentType has to be '78'"""
 async def get_pending_sell_order_details(client: P2P):
 
     orders_list = await get_sell_order_id(client=client)
@@ -413,7 +413,10 @@ async def main():
         api_key=os.getenv("API_KEY"),
         api_secret=os.getenv("API_SECRET"),
     )
-
+    # wise_api = P2P(
+    #     api_token=os.getenv("API_TOKEN"),
+    #     base_url=os.getenv("BASE_URL"),
+    # )
 
     print("Current balance in USDT:",
         await fetch_balance(client=api)
@@ -511,6 +514,9 @@ async def main():
 
     """NEED to fix this!"""
 
+    print("Test order details", await api.get_order_details(
+        orderId="1993151227714883584"
+    ))
 
     # 8. Get Pending Orders
     print("Pending orders:", await api.get_pending_orders(
