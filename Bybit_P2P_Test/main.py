@@ -29,21 +29,39 @@ async def fetch_wise_sell_ad_details(client: P2P):
     return wise_sell_ad
 
 
+# -------------------------
+# AD PAYLOAD FACTORY
+# -------------------------
 
-"""USES TEST AD AT THIS MOMENT, HAVE TO CHANGE TO REAL ONE BEFORE GO LIVE"""
-async def modify_wise_buy_ad(client: P2P):  #Uses test ad at this stage
-    buy_ad_mod = await client.update_ad(
-        id="1977382182365315072",   # Replace with Wise buy ad in the future
-        priceType=0,
-        tokenId="USDT",
-        currencyId="USD",
-        side=0,
-        premium=0,  # these values can all be either int or str, library handles it automatically
-        price=0.97, # Adjust price before going live
-        minAmount=150,
-        maxAmount=200,
-        remark="Contact @kolya5544 on Telegram once you've paid.",  # Remark shall be changed in the future
-        tradingPreferenceSet={
+def build_ad_payload(
+    *,
+    ad_id: str,
+    side: int,
+    price: float,
+    min_amount: int,
+    max_amount: int,
+    remark: str,
+    action_type: str,
+    quantity: str = "200",
+    payment_period: str = "15"
+):
+    """
+    Creates a clean, consistent payload for update_ad().
+    All the shared parameters live here to avoid duplication.
+    """
+
+    return {
+        "id": ad_id,
+        "priceType": 0,
+        "tokenId": "USDT",
+        "currencyId": "USD",
+        "side": side,
+        "premium": 0,
+        "price": price,
+        "minAmount": min_amount,
+        "maxAmount": max_amount,
+        "remark": remark,
+        "tradingPreferenceSet": {
             "hasUnPostAd": 0,
             "isKyc": 1,
             "isEmail": 1,
@@ -57,114 +75,72 @@ async def modify_wise_buy_ad(client: P2P):  #Uses test ad at this stage
             "hasCompleteRateDay30": 1,
             "hasNationalLimit": 0
         },
-        paymentIds=["21555896"],  # has to be str
-        actionType="MODIFY",  # use ACTIVE to just reactivate the ad
-        quantity="200",
-        paymentPeriod="15"
-    )
-    return buy_ad_mod
+        "paymentIds": ["21555896"],   # must be str
+        "actionType": action_type,
+        "quantity": quantity,
+        "paymentPeriod": payment_period
+    }
 
-"""USES TEST AD AT THIS MOMENT, HAVE TO CHANGE TO REAL ONE BEFORE GO LIVE"""
+
+# ============================
+# MODIFY BUY/SELL ADS (TEST)
+# ============================
+
+async def modify_wise_buy_ad(client: P2P):
+    payload = build_ad_payload(
+        ad_id="1977382182365315072",   # TODO replace with real ID before going live
+        side=0,
+        price=0.97,
+        min_amount=150,
+        max_amount=200,
+        remark="Contact @kolya5544 on Telegram once you've paid.",
+        action_type="MODIFY"
+    )
+    return await client.update_ad(**payload)
+
+
 async def modify_wise_sell_ad(client: P2P):
-    sell_ad_mod = await client.update_ad(
-        id="1975370069588332544",  # Repalce with Wise sell ad in the future
-        priceType=0,
-        tokenId="USDT",
-        currencyId="USD",
+    payload = build_ad_payload(
+        ad_id="1975370069588332544",   # TODO replace with real ID
         side=1,
-        premium=0,  # these values can all be either int or str, library handles it automatically
-        price=1.05, # Adjust price before going live
-        minAmount=150,
-        maxAmount=200,
-        remark="Contact @kolya5544 on Telegram once you've paid.",  # Remark shall be changed in the future
-        tradingPreferenceSet={
-            "hasUnPostAd": 0,
-            "isKyc": 1,
-            "isEmail": 1,
-            "isMobile": 1,
-            "hasRegisterTime": 0,
-            "registerTimeThreshold": 0,
-            "orderFinishNumberDay30": 0,
-            "completeRateDay30": "",
-            "nationalLimit": "",
-            "hasOrderFinishNumberDay30": 1,
-            "hasCompleteRateDay30": 1,
-            "hasNationalLimit": 0
-        },
-        paymentIds=["21555896"],  # has to be str
-        actionType="MODIFY",  # use ACTIVE to just reactivate the ad
-        quantity="200",
-        paymentPeriod="15"
+        price=1.05,
+        min_amount=150,
+        max_amount=200,
+        remark="Contact @kolya5544 on Telegram once you've paid.",
+        action_type="MODIFY"
     )
-    return sell_ad_mod
+    return await client.update_ad(**payload)
 
-"""USES TEST AD AT THIS MOMENT, HAVE TO CHANGE TO REAL ONE BEFORE GO LIVE"""
+
+# ============================
+# ACTIVATE ADS
+# ============================
+
 async def activate_wise_buy_ad(client: P2P):
-    buy_ad_act = await client.update_ad(
-        id="1977382182365315072",  # Replace with Wise buy ad in the future
-        priceType=0,
-        tokenId="USDT",
-        currencyId="USD",
+    payload = build_ad_payload(
+        ad_id="1977382182365315072",
         side=0,
-        premium=0,  # these values can all be either int or str, library handles it automatically
-        price=0.97,  # Adjust price before going live
-        minAmount=150,
-        maxAmount=200,
-        remark="Contact @kol4 on Telegram once you've paid.",  # Remark shall be changed in the future
-        tradingPreferenceSet={
-            "hasUnPostAd": 0,
-            "isKyc": 1,
-            "isEmail": 1,
-            "isMobile": 1,
-            "hasRegisterTime": 0,
-            "registerTimeThreshold": 0,
-            "orderFinishNumberDay30": 0,
-            "completeRateDay30": "",
-            "nationalLimit": "",
-            "hasOrderFinishNumberDay30": 1,
-            "hasCompleteRateDay30": 1,
-            "hasNationalLimit": 0
-        },
-        paymentIds=["21555896"],  # has to be str
-        actionType="ACTIVE",  # use ACTIVE to just reactivate the ad
-        quantity="200",
-        paymentPeriod="15"
+        price=0.97,
+        min_amount=150,
+        max_amount=200,
+        remark="Contact @kol4 on Telegram once you've paid.",
+        action_type="ACTIVE"
     )
-    return buy_ad_act
+    return await client.update_ad(**payload)
 
-"""USES TEST AD AT THIS MOMENT, HAVE TO CHANGE TO REAL ONE BEFORE GO LIVE"""
+
 async def activate_wise_sell_ad(client: P2P):
-    sell_ad_act = await client.update_ad(
-        id="1975370069588332544",  # Repalce with Wise sell ad in the future
-        priceType=0,
-        tokenId="USDT",
-        currencyId="USD",
+    payload = build_ad_payload(
+        ad_id="1975370069588332544",
         side=1,
-        premium=0,  # these values can all be either int or str, library handles it automatically
-        price=1.05, # Adjust price before going live
-        minAmount=150,
-        maxAmount=200,
-        remark="Contact @ko44 on Telegram once you've paid.",  # Remark shall be changed in the future
-        tradingPreferenceSet={
-            "hasUnPostAd": 0,
-            "isKyc": 1,
-            "isEmail": 1,
-            "isMobile": 1,
-            "hasRegisterTime": 0,
-            "registerTimeThreshold": 0,
-            "orderFinishNumberDay30": 0,
-            "completeRateDay30": "",
-            "nationalLimit": "",
-            "hasOrderFinishNumberDay30": 1,
-            "hasCompleteRateDay30": 1,
-            "hasNationalLimit": 0
-        },
-        paymentIds=["21555896"],  # has to be str
-        actionType="ACTIVE",  # use ACTIVE to just reactivate the ad
-        quantity="200",
-        paymentPeriod="15"
+        price=1.05,
+        min_amount=150,
+        max_amount=200,
+        remark="Contact @ko44 on Telegram once you've paid.",
+        action_type="ACTIVE"
     )
-    return sell_ad_act
+    return await client.update_ad(**payload)
+
 
 """USES TEST AD, REPLACE WITH WISE BUY AD BEFORE GOING LIVE"""
 async def remove_wise_buy_ad(client: P2P):
@@ -396,20 +372,6 @@ async def main():
           await fetch_wise_sell_ad_details(client=api)
           )
 
-
-    """FOR some reason to remove/activate ad I have to shadow print("mod ads") below"""
-
-    """REQUIRES ATTENTION!"""
-    # print("Modify buy ad: ",
-    #       await modify_wise_buy_ad(client=api)
-    #       )
-    #
-    # print("Modify sell ad: ",
-    #       await modify_wise_sell_ad(client=api)
-    #       )
-
-    """KEEP INACTIVE SO CALLS DO NOT CONFLICT WITH EACH OTHER"""
-
     print("Buy ad active:",
           await activate_wise_buy_ad(client=api)
           )
@@ -417,6 +379,21 @@ async def main():
     print("Sell ad active:",
           await activate_wise_sell_ad(client=api)
           )
+
+    """FOR some reason to remove/activate ad I have to shadow print("modify ads") below"""
+
+    """REQUIRES ATTENTION!"""
+    print("Modify buy ad: ",
+          await modify_wise_buy_ad(client=api)
+          )
+
+    print("Modify sell ad: ",
+          await modify_wise_sell_ad(client=api)
+          )
+
+    """KEEP INACTIVE SO CALLS DO NOT CONFLICT WITH EACH OTHER"""
+
+
 
     print("Test buy ad removed:",
           await remove_wise_buy_ad(client=api)
