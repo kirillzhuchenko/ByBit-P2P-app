@@ -12,12 +12,18 @@ import uuid
 
 
 async def fetch_balance(client: P2P):
-    current_balance = await client.get_current_balance(
-        accountType="FUND",
-        currency="USDT"
-    )
-    present_balance = current_balance["result"]["balance"][2]["transferBalance"]
-    return present_balance
+    # [0] - represents place in a dict. Due to 'coin="USDT"', response contains USDT only
+    try:
+        current_balance = await client.get_current_balance(
+            accountType="FUND",
+            coin="USDT"
+        )
+        present_balance = current_balance["result"]["balance"][0]["transferBalance"]
+        return present_balance
+    except Exception as e:
+        print(f"Failed to fetch balance: {e}")      # TODO add sending a Telegram msg in case of failure instead of printing error
+        raise
+
 
 
 async def fetch_wise_buy_ad_details(client: P2P):
@@ -450,7 +456,6 @@ async def main():
         originalUid="177871751",
         orderId="1992070819939557376"
     ))
-
 
     await api.close_session()
 
