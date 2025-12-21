@@ -21,7 +21,9 @@ async def fetch_balance(client: P2P):
         present_balance = current_balance["result"]["balance"][0]["transferBalance"]
         return present_balance
     except Exception as e:
-        print(f"Failed to fetch balance: {e}")      # TODO add sending a Telegram msg in case of failure instead of printing error
+        print(f"Failed to fetch balance: {e}")
+        # TODO: add sending a Telegram msg in case of failure instead of printing error
+        # 'raise' will abort current session after sending a telegram msg
         raise
 
 
@@ -87,11 +89,14 @@ def build_ad_payload(
         "paymentPeriod": payment_period
     }
 
+# TODO: Think of combining modify and activate ad
 
 # ============================
 # MODIFY BUY/SELL ADS (TEST)
 # ============================
 
+# TODO: replace with "1799865939992154112" before going live
+"""Adjust: price, min/max_amount, remark"""
 async def modify_wise_buy_ad(client: P2P):
     payload = build_ad_payload(
         ad_id="1977382182365315072",   # TODO replace with real ID before going live
@@ -104,7 +109,9 @@ async def modify_wise_buy_ad(client: P2P):
     )
     return await client.update_ad(**payload)
 
-
+# TODO: replace with "1989351720308887552" before going live
+"""Adjust: price, min/max_amount, remark"""
+'''Optionally: Think of adjusting the price based on other seller's behavior'''
 async def modify_wise_sell_ad(client: P2P):
     payload = build_ad_payload(
         ad_id="1975370069588332544",   # TODO replace with real ID
@@ -122,6 +129,8 @@ async def modify_wise_sell_ad(client: P2P):
 # ACTIVATE ADS
 # ============================
 
+# TODO: replace with "1799865939992154112" before going live
+"""Adjust: price, min/max_amount, remark"""
 async def activate_wise_buy_ad(client: P2P):
     payload = build_ad_payload(
         ad_id="1977382182365315072",
@@ -135,6 +144,9 @@ async def activate_wise_buy_ad(client: P2P):
     return await client.update_ad(**payload)
 
 
+# TODO: replace with "1989351720308887552" before going live
+"""Adjust: price, min/max_amount, remark"""
+'''Optionally: Think of adjusting the price based on other seller's behavior'''
 async def activate_wise_sell_ad(client: P2P):
     payload = build_ad_payload(
         ad_id="1975370069588332544",
@@ -148,14 +160,15 @@ async def activate_wise_sell_ad(client: P2P):
     return await client.update_ad(**payload)
 
 
-"""USES TEST AD, REPLACE WITH WISE BUY AD BEFORE GOING LIVE"""
+# TODO: replace with "1799865939992154112" before going live
 async def remove_wise_buy_ad(client: P2P):
     buy_ad_rem = await client.remove_ad(
         itemId="1977382182365315072"
     )
     return buy_ad_rem
 
-"""USES TEST AD, REPLACE WITH WISE SELL AD BEFORE GOING LIVE"""
+
+# TODO: replace with "1989351720308887552" before going live
 async def remove_wise_sell_ad(client: P2P):
     sell_ad_rem = await client.remove_ad(
         itemId="1975370069588332544"
@@ -177,6 +190,7 @@ async def fetch_pending_sell_orders(client: P2P):
             "order_id": o["id"],
             "name": o["buyerRealName"],
             "amount": o["amount"],
+            "createDate": o["createDate"],
         }
         result.append(entry)
 
@@ -231,7 +245,7 @@ async def send_chat_message(client: P2P):
         print(f"Sending message to {order_id}")  #see if i need this line of code
         account_link = "https://wise.com/pay/business/ipzhuchenkollc"
         payment_link = "not available at this time"
-        """HAVE TO ADD {wisetag} AND {payment_link} AFTER ADDING THEM MAIN.PY"""
+        #TODO: HAVE TO ADD Payment QR-code instead of Payment link. Payment link doesn't work with USD via Wise API calls
         try:
             response = await client.send_chat_message(
                 message=(f"Hello!\n"
@@ -244,7 +258,7 @@ async def send_chat_message(client: P2P):
                         f"  💸Wisetag: @ipzhuchenkollc\n"
                         f"  💸Account link: {account_link}\n"
                         f"  💸Payment link: {payment_link}\n\n"
-                        f"📩If you have any questions, feel free to contact me on Telegram: @@DeFi_Capital📩"),
+                        f"📩If you have any questions, feel free to contact me on Telegram: @DeFi_Capital📩"),
                 contentType="str",
                 orderId=order_id,
                 msgUuid=uuid.uuid4().hex,
@@ -252,10 +266,11 @@ async def send_chat_message(client: P2P):
             print("Response:", response)
         except Exception as e:
             print(f"Failed to send message to order {order_id} -> {e}")
+            # TODO: Add sending a Telegram msg in case if the msg hasn't been sent. NO HARD/SOFT STOP REQUIRED.
 
     print("All messages sent")
 
-"""FETCHES BUY ORDERS, REMEMBER TO CHANGE IT TO FETCH SELL ORDERS"""
+
 async def get_sell_order_id(client: P2P):
 
     response = await fetch_pending_sell_orders(client=client)
@@ -409,7 +424,34 @@ async def main():
           await remove_wise_sell_ad(client=api)
           )
 
+    # TODO: Once marked as paid: paymentType == 78 AND timestamp (withing 30mins) AND Wise sender name == ByBit AND Wise sender amount == ByBit -> Release funds
+    # if paymentType =! 78 -> Telegram text msg
+    # if Wise Name =! ByBit -> Telegram text
+    # if Wise balance =! ByBit -> Telegram text. !!!! round up to 2 decimals. 111.118 -> 111.12, 111.113 -> 111.11
+    # if timestamp withing order creation -> proceed
+    payment_type = await get_pending_sell_order_details(client=api) #get paymentType
+    bybit_name = await fetch_pending_sell_orders(client=api) #get buyerRealName
+    bybit_amount = await fetch_pending_sell_orders(client=api) #get amount
+    #TODO: Think of adding timestamp tracking of a created sell order.
+    paymentType = payment_type[0]["paymentType"]
+    buyerRealName = bybit_name[0]["buyerRealName"]
+    amount = bybit_amount[0]["amount"]
+    if paymentType == 78:
+        # and buyerRealName == wiseBuyerName and amount == wiseBuyerTransfer
+        await release_assets(client=api)
 
+    elif paymentType != 78:
+        print("Payment type not recognized")
+        #TODO: Send telegram msg
+    elif buyerRealName != wiseBuyerName:
+        print("Buyer RealName not recognized")
+        #TODO: Send Telegram msg
+    elif amount != wiseBuyerTransfer:
+        print("Amount not recognized")
+        #TODO: Send Telegram msg
+    else:
+        print("Attention required")
+        #TODO: Send Telegram msg
 
     print("Fetch last 20 Pending sell orders:",
           await fetch_pending_sell_orders(client=api)
@@ -423,9 +465,9 @@ async def main():
           await get_chat_message(client=api)
           )
 
-    print("Message sent:",
-          await send_chat_message(client=api)
-          )
+    # print("Message sent:",
+    #       await send_chat_message(client=api)
+    #       )
 
     """NEED to fix this!"""
     print("Sell order Info:",
@@ -440,7 +482,8 @@ async def main():
     """NEED to fix this!"""
 
     print("Test order details", await api.get_order_details(
-        orderId="1993151227714883584"
+        # orderId="1993151227714883584"
+        orderId = "2002879935441309696"
     ))
 
     # 8. Get Pending Orders
