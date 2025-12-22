@@ -19,8 +19,8 @@ import csv
 #    WISE Cluster
 #=====================
 
-api_token = os.getenv("token")
-base_url = os.getenv("wise-url")
+api_token = os.getenv("API_TOKEN")
+base_url = os.getenv("BASE_URL")
 
 headers = {
     "Authorization": f"Bearer {api_token}",
@@ -649,7 +649,7 @@ async def main():
         while True:
             await display_balance_and_transactions(client, profile_id, currency="USD")
             await asyncio.sleep(30)
-
+        #
     # await api.close_session()
 
 
