@@ -9,9 +9,134 @@ from async_bybit_p2p import P2P
 import asyncio
 import os
 import uuid
+from io import StringIO
+from datetime import datetime, timezone
+import httpx
+import csv
 
 
-async def fetch_balance(client: P2P):
+#=====================
+#    WISE Cluster
+#=====================
+
+api_token = os.getenv("token")
+base_url = os.getenv("wise-url")
+
+headers = {
+    "Authorization": f"Bearer {api_token}",
+    "Content-Type": "application/json"
+}
+
+async def get_profiles(client):
+    """Fetch user profiles."""
+    r = await client.get(f"{base_url}/v2/profiles")
+    r.raise_for_status()
+    return r.json()
+
+
+async def get_wise_balances(client, profile_id):
+    """Fetch balances for business account."""
+    r = await client.get(f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD")
+    r.raise_for_status()
+    return r.json()
+
+"""Original code:"""
+async def get_incoming_transfers_csv(client, profile_id, account_id, currency):
+    """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
+    today = datetime.now(timezone.utc).date()  # timezone-aware UTC
+    start = f"{today}T00:00:00.000Z"
+    end = f"{today}T23:59:59.999Z"
+
+    url = (
+        f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
+        f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
+    )
+
+    response = await client.get(url)
+    response.raise_for_status()
+
+    csv_text = response.text
+    reader = csv.DictReader(StringIO(csv_text))
+
+    incoming = []
+    for row in reader:
+        if row.get("Transaction Type") == "CREDIT":
+            incoming.append({
+                "amount": float(row.get("Amount", 0)),
+                "name": row.get("Payer Name") or "Unknown",
+                "reference": row.get("TransferWise ID") or "No reference",
+                "time": row.get("Date Time")
+            })
+
+    return incoming
+
+
+async def get_outgoing_transfers_csv(client, profile_id, account_id, currency):
+    """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
+    today = datetime.now(timezone.utc).date()  # timezone-aware UTC
+    start = f"{today}T00:00:00.000Z"
+    end = f"{today}T23:59:59.999Z"
+
+    url = (
+        f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
+        f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
+    )
+
+    response = await client.get(url)
+    response.raise_for_status()
+
+    csv_text = response.text
+    reader = csv.DictReader(StringIO(csv_text))
+
+    outgoing = []
+    for row in reader:
+        if row.get("Transaction Type") == "DEBIT":
+            outgoing.append({
+                "amount": float(row.get("Amount", 0)),
+                "name": row.get("Payee Name") or "Unknown",
+                "reference": row.get("TransferWise ID") or "No reference",
+                "time" : row.get("Date Time")
+            })
+
+    return outgoing
+
+
+async def display_balance_and_transactions(client, profile_id, currency="USD"):
+    balances = await get_wise_balances(client, profile_id)
+
+    account = None
+    for b in balances:
+        if b["currency"] == currency:
+            account = b
+            balance_amount = float(b["amount"]["value"])
+            print(f"\n[{datetime.now().isoformat()}] 💰 Current {currency} Balance: {balance_amount}")
+            break
+
+    if not account:
+        print(f"❌ No {currency} balance found.")
+        return
+
+    incoming_today = await get_incoming_transfers_csv(client, profile_id, account["id"], currency)
+
+    if incoming_today:
+        print("📥 Incoming transfers today:")
+        for tx in incoming_today:
+            print(f"   + {tx['amount']} {currency} | {tx['name']} | Ref: {tx['reference']} | {tx['time']}")
+    else:
+        print("⚠️ No incoming transfers today.")
+
+    outgoing_today = await get_outgoing_transfers_csv(client, profile_id, account["id"], currency)
+
+    if outgoing_today:
+        print("📥 Outgoing transfers today:")
+        for tx in outgoing_today:
+            print(f"   {tx['amount']} {currency} | {tx['name']} | Ref: {tx['reference']} | {tx['time']}")
+    else:
+        print("⚠️ No Outgoing transfers today.")
+
+
+
+async def get_bybit_balance(client: P2P):
     # [0] - represents place in a dict. Due to 'coin="USDT"', response contains USDT only
     try:
         current_balance = await client.get_current_balance(
@@ -375,13 +500,11 @@ async def main():
         api_key=os.getenv("API_KEY"),
         api_secret=os.getenv("API_SECRET"),
     )
-    # wise_api = P2P(
-    #     api_token=os.getenv("API_TOKEN"),
-    #     base_url=os.getenv("BASE_URL"),
-    # )
+
+
 
     print("Current balance in USDT:",
-        await fetch_balance(client=api)
+        await get_bybit_balance(client=api)
           )
 
 
@@ -429,29 +552,31 @@ async def main():
     # if Wise Name =! ByBit -> Telegram text
     # if Wise balance =! ByBit -> Telegram text. !!!! round up to 2 decimals. 111.118 -> 111.12, 111.113 -> 111.11
     # if timestamp withing order creation -> proceed
-    payment_type = await get_pending_sell_order_details(client=api) #get paymentType
-    bybit_name = await fetch_pending_sell_orders(client=api) #get buyerRealName
-    bybit_amount = await fetch_pending_sell_orders(client=api) #get amount
-    #TODO: Think of adding timestamp tracking of a created sell order.
-    paymentType = payment_type[0]["paymentType"]
-    buyerRealName = bybit_name[0]["buyerRealName"]
-    amount = bybit_amount[0]["amount"]
-    if paymentType == 78:
-        # and buyerRealName == wiseBuyerName and amount == wiseBuyerTransfer
-        await release_assets(client=api)
 
-    elif paymentType != 78:
-        print("Payment type not recognized")
-        #TODO: Send telegram msg
-    elif buyerRealName != wiseBuyerName:
-        print("Buyer RealName not recognized")
-        #TODO: Send Telegram msg
-    elif amount != wiseBuyerTransfer:
-        print("Amount not recognized")
-        #TODO: Send Telegram msg
-    else:
-        print("Attention required")
-        #TODO: Send Telegram msg
+    # payment_type = await get_pending_sell_order_details(client=api) #get paymentType
+    # bybit_name = await fetch_pending_sell_orders(client=api) #get buyerRealName
+    # bybit_amount = await fetch_pending_sell_orders(client=api) #get amount
+    # #TODO: Think of adding timestamp tracking of a created sell order.
+    # payment_type = payment_type[0]["paymentType"]
+    # buyerRealName = bybit_name[0]["buyerRealName"]
+    # amount = bybit_amount[0]["amount"]
+    # if payment_type == 78:
+    #     # and buyerRealName == wiseBuyerName and amount == wiseBuyerTransfer
+    #     # await release_assets(client=api)
+    #     print("Ready to release")
+    #
+    # elif payment_type != 78:
+    #     print("Payment type not recognized")
+    #     #TODO: Send telegram msg
+    # # elif buyerRealName != wiseBuyerName:
+    # #     print("Buyer RealName not recognized")
+    # #     #TODO: Send Telegram msg
+    # # elif amount != wiseBuyerTransfer:
+    # #     print("Amount not recognized")
+    # #     #TODO: Send Telegram msg
+    # else:
+    #     print("Attention required")
+    #     #TODO: Send Telegram msg
 
     print("Fetch last 20 Pending sell orders:",
           await fetch_pending_sell_orders(client=api)
@@ -500,9 +625,32 @@ async def main():
         orderId="1992070819939557376"
     ))
 
-    await api.close_session()
 
 
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+
+        profiles = await get_profiles(client)
+
+        business_profile = None
+        for p in profiles:
+            print(f"Profile: {p['id']} | type={p['type']} | name={p.get('fullName')}")
+            if p["type"] == "BUSINESS":
+                business_profile = p
+                break
+
+        if not business_profile:
+            print("❌ No business profile found")
+            return
+
+        profile_id = business_profile["id"]
+        print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
+        print("🔁 Starting continuous Wise balance & incoming transfer tracking every 30 seconds...\n")
+
+        while True:
+            await display_balance_and_transactions(client, profile_id, currency="USD")
+            await asyncio.sleep(30)
+
+    # await api.close_session()
 
 
 
