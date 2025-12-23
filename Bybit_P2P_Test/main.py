@@ -641,7 +641,7 @@ async def main():
         if not business_profile:
             print("❌ No business profile found")
             #TODO: If can't find a business profile -> send a Telegram msg
-            raise
+            return
 
         profile_id = business_profile["id"]
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
