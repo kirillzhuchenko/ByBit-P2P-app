@@ -239,7 +239,7 @@ class WiseAdConfig:
     buy_ad_id: str
     sell_ad_id: str
 
-#TODO: Replace with real production buy="1799865939992154112" and sell="1989351720308887552" before going live
+#TODO: Replace with real production buy="1799865939992154112" and sell="1989351720308887552" and more before going live
 """Test ads used"""
 TEST_CONFIG = WiseAdConfig(
     buy_ad_id="1977382182365315072",
@@ -314,22 +314,6 @@ async def update_wise_ad(
     )
     return await client.update_ad(**payload)
 
-
-# #TODO: Think of removing buy_ad only when Wise balance is below 500$.
-# # TODO: replace with "1799865939992154112" before going live
-# async def remove_wise_buy_ad(client: P2P):
-#     buy_ad_rem = await client.remove_ad(
-#         itemId="1977382182365315072"
-#     )
-#     return buy_ad_rem
-#
-# #TODO: Think of removing sell_ad only when present balance is below 100 usdt.
-# # TODO: replace with "1989351720308887552" before going live
-# async def remove_wise_sell_ad(client: P2P):
-#     sell_ad_rem = await client.remove_ad(
-#         itemId="1975370069588332544"
-#     )
-#     return sell_ad_rem
 
 def remove_ad_payload(
     *,
@@ -639,6 +623,11 @@ async def main():
           await fetch_wise_sell_ad_details(client=api)
           )
 
+# TODO: Add remove/activate/modify logic
+# a.k.a if [present_balance] < 500usdt:
+    # remove_wise_ad
+    #etc.
+
     print("Buy ad active:",
           await update_wise_ad(
               client=api,
@@ -693,8 +682,6 @@ async def main():
             action=ActionType.MODIFY,
         )
           )
-
-    """KEEP INACTIVE SO CALLS DO NOT CONFLICT WITH EACH OTHER"""
 
 
     print("Test buy ad removed:",
