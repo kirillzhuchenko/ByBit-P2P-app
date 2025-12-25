@@ -315,21 +315,37 @@ async def update_wise_ad(
     return await client.update_ad(**payload)
 
 
+# #TODO: Think of removing buy_ad only when Wise balance is below 500$.
+# # TODO: replace with "1799865939992154112" before going live
+# async def remove_wise_buy_ad(client: P2P):
+#     buy_ad_rem = await client.remove_ad(
+#         itemId="1977382182365315072"
+#     )
+#     return buy_ad_rem
+#
+# #TODO: Think of removing sell_ad only when present balance is below 100 usdt.
+# # TODO: replace with "1989351720308887552" before going live
+# async def remove_wise_sell_ad(client: P2P):
+#     sell_ad_rem = await client.remove_ad(
+#         itemId="1975370069588332544"
+#     )
+#     return sell_ad_rem
 
-# TODO: replace with "1799865939992154112" before going live
-async def remove_wise_buy_ad(client: P2P):
-    buy_ad_rem = await client.remove_ad(
-        itemId="1977382182365315072"
+def remove_ad_payload(
+    *,
+    ad_id: str,
+):
+    return {"itemId": ad_id}
+
+async def remove_wise_ad(
+        *,
+        client: P2P,
+        ad_id: str,
+):
+    payload = remove_ad_payload(
+        ad_id=ad_id,
     )
-    return buy_ad_rem
-
-
-# TODO: replace with "1989351720308887552" before going live
-async def remove_wise_sell_ad(client: P2P):
-    sell_ad_rem = await client.remove_ad(
-        itemId="1975370069588332544"
-    )
-    return sell_ad_rem
+    return await client.remove_ad(**payload)
 
 
 async def fetch_pending_sell_orders(client: P2P):
@@ -681,14 +697,19 @@ async def main():
     """KEEP INACTIVE SO CALLS DO NOT CONFLICT WITH EACH OTHER"""
 
 
-
     print("Test buy ad removed:",
-          await remove_wise_buy_ad(client=api)
+          await remove_wise_ad(
+            client=api,
+            ad_id=TEST_CONFIG.buy_ad_id,
           )
-
+    )
     print("Test sell ad removed:",
-          await remove_wise_sell_ad(client=api)
+          await remove_wise_ad(
+              client=api,
+              ad_id=TEST_CONFIG.sell_ad_id,
           )
+    )
+
 
     # TODO: Once marked as paid: paymentType == 78 AND timestamp (withing 30mins) AND Wise sender name == ByBit AND Wise sender amount == ByBit -> Release funds
     # if paymentType =! 78 -> Telegram text msg
