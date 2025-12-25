@@ -13,7 +13,9 @@ from io import StringIO
 from datetime import datetime, timezone
 import httpx
 import csv
-
+from dataclasses import dataclass
+from enum import IntEnum, StrEnum
+from typing import TypedDict
 
 #=====================
 #    WISE Cluster
@@ -135,6 +137,9 @@ async def display_balance_and_transactions(client, profile_id, currency="USD"):
         print("⚠️ No Outgoing transfers today.")
 
 
+#=====================
+#    ByBit Cluster
+#=====================
 
 async def get_bybit_balance(client: P2P):
     # [0] - represents place in a dict. Due to 'coin="USDT"', response contains USDT only
@@ -162,127 +167,153 @@ async def fetch_wise_sell_ad_details(client: P2P):
     return wise_sell_ad
 
 
-# -------------------------
-# AD PAYLOAD FACTORY
-# -------------------------
+
+
+"""Ad config section"""
+
+# ============================
+# ENUMS & CONSTANTS
+# ============================
+
+class AdSide(IntEnum):
+    BUY = 0
+    SELL = 1
+
+
+class ActionType(StrEnum):
+    MODIFY = "MODIFY"
+    ACTIVATE = "ACTIVE"
+
+
+DEFAULT_TOKEN_ID = "USDT"
+DEFAULT_CURRENCY_ID = "USD"
+DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs
+
+
+DEFAULT_TRADING_PREFERENCES = {
+    "hasUnPostAd": 0,
+    "isKyc": 1,
+    "isEmail": 1,
+    "isMobile": 1,
+    "hasRegisterTime": 0,
+    "registerTimeThreshold": 0,
+    "orderFinishNumberDay30": 0,
+    "completeRateDay30": "",
+    "nationalLimit": "",
+    "hasOrderFinishNumberDay30": 1,
+    "hasCompleteRateDay30": 1,
+    "hasNationalLimit": 0,
+}
+
+
+# ============================
+# TYPING
+# ============================
+
+class AdPayload(TypedDict):
+    id: str
+    priceType: int
+    tokenId: str
+    currencyId: str
+    side: int
+    premium: int
+    price: float
+    minAmount: int
+    maxAmount: int
+    remark: str
+    tradingPreferenceSet: dict
+    paymentIds: list[str]
+    actionType: str
+    quantity: str
+    paymentPeriod: str
+
+
+# ============================
+# CONFIG
+# ============================
+"""WARNING! Setting frozen=True makes the instance immutable after creation.
+                    Attributes cannot be modified
+        Attempts to reassign values raise a FrozenInstanceError"""
+@dataclass(frozen=True)
+class WiseAdConfig:
+    buy_ad_id: str
+    sell_ad_id: str
+
+#TODO: Replace with real production buy="1799865939992154112" and sell="1989351720308887552" before going live
+"""Test ads used"""
+TEST_CONFIG = WiseAdConfig(
+    buy_ad_id="1977382182365315072",
+    sell_ad_id="1975370069588332544",
+)
+
+
+# ============================
+# PAYLOAD BUILDER
+# ============================
 
 def build_ad_payload(
     *,
     ad_id: str,
-    side: int,
+    side: AdSide,
     price: float,
     min_amount: int,
     max_amount: int,
     remark: str,
-    action_type: str,
+    action_type: ActionType,
     quantity: str = "200",
-    payment_period: str = "15"
-):
-    """
-    Creates a clean, consistent payload for update_ad().
-    All the shared parameters live here to avoid duplication.
-    """
+    payment_period: str = "15",
+) -> AdPayload:
+    if price <= 0:
+        raise ValueError("price must be positive")
+
+    if min_amount > max_amount:
+        raise ValueError("min_amount cannot exceed max_amount")
 
     return {
         "id": ad_id,
         "priceType": 0,
-        "tokenId": "USDT",
-        "currencyId": "USD",
-        "side": side,
+        "tokenId": DEFAULT_TOKEN_ID,
+        "currencyId": DEFAULT_CURRENCY_ID,
+        "side": int(side),
         "premium": 0,
         "price": price,
         "minAmount": min_amount,
         "maxAmount": max_amount,
         "remark": remark,
-        "tradingPreferenceSet": {
-            "hasUnPostAd": 0,
-            "isKyc": 1,
-            "isEmail": 1,
-            "isMobile": 1,
-            "hasRegisterTime": 0,
-            "registerTimeThreshold": 0,
-            "orderFinishNumberDay30": 0,
-            "completeRateDay30": "",
-            "nationalLimit": "",
-            "hasOrderFinishNumberDay30": 1,
-            "hasCompleteRateDay30": 1,
-            "hasNationalLimit": 0
-        },
-        "paymentIds": ["21555896"],   # must be str
+        "tradingPreferenceSet": DEFAULT_TRADING_PREFERENCES,
+        "paymentIds": DEFAULT_PAYMENT_IDS,
         "actionType": action_type,
         "quantity": quantity,
-        "paymentPeriod": payment_period
+        "paymentPeriod": payment_period,
     }
 
-# TODO: Think of combining modify and activate ad
 
 # ============================
-# MODIFY BUY/SELL ADS (TEST)
+# SINGLE UPDATE ENTRY POINT
 # ============================
 
-# TODO: replace with "1799865939992154112" before going live
-"""Adjust: price, min/max_amount, remark"""
-async def modify_wise_buy_ad(client: P2P):
+async def update_wise_ad(
+    *,
+    client: "P2P",
+    ad_id: str,
+    side: AdSide,
+    price: float,
+    min_amount: int,
+    max_amount: int,
+    remark: str,
+    action: ActionType,
+):
     payload = build_ad_payload(
-        ad_id="1977382182365315072",   # TODO replace with real ID before going live
-        side=0,
-        price=0.97,
-        min_amount=150,
-        max_amount=200,
-        remark="Contact @kolya5544 on Telegram once you've paid.",
-        action_type="MODIFY"
+        ad_id=ad_id,
+        side=side,
+        price=price,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        remark=remark,
+        action_type=action,
     )
     return await client.update_ad(**payload)
 
-# TODO: replace with "1989351720308887552" before going live
-"""Adjust: price, min/max_amount, remark"""
-'''Optionally: Think of adjusting the price based on other seller's behavior'''
-async def modify_wise_sell_ad(client: P2P):
-    payload = build_ad_payload(
-        ad_id="1975370069588332544",   # TODO replace with real ID
-        side=1,
-        price=1.05,
-        min_amount=150,
-        max_amount=200,
-        remark="Contact @kolya5544 on Telegram once you've paid.",
-        action_type="MODIFY"
-    )
-    return await client.update_ad(**payload)
-
-
-# ============================
-# ACTIVATE ADS
-# ============================
-
-# TODO: replace with "1799865939992154112" before going live
-"""Adjust: price, min/max_amount, remark"""
-async def activate_wise_buy_ad(client: P2P):
-    payload = build_ad_payload(
-        ad_id="1977382182365315072",
-        side=0,
-        price=0.97,
-        min_amount=150,
-        max_amount=200,
-        remark="Contact @kol4 on Telegram once you've paid.",
-        action_type="ACTIVE"
-    )
-    return await client.update_ad(**payload)
-
-
-# TODO: replace with "1989351720308887552" before going live
-"""Adjust: price, min/max_amount, remark"""
-'''Optionally: Think of adjusting the price based on other seller's behavior'''
-async def activate_wise_sell_ad(client: P2P):
-    payload = build_ad_payload(
-        ad_id="1975370069588332544",
-        side=1,
-        price=1.05,
-        min_amount=150,
-        max_amount=200,
-        remark="Contact @ko44 on Telegram once you've paid.",
-        action_type="ACTIVE"
-    )
-    return await client.update_ad(**payload)
 
 
 # TODO: replace with "1799865939992154112" before going live
@@ -425,73 +456,149 @@ async def get_buy_order_id(client: P2P):
 
     return result
 
+
+# --- 1. The New Generic Helper Function ---
+async def get_order_details_generic(client: P2P, orders_list: list):
+    """
+    Takes a list of order dictionaries (containing 'orderId') and fetches
+    details for all of them concurrently.
+    """
+    # Create the tasks
+    tasks = []
+    for order in orders_list:
+        tasks.append(client.get_order_details(orderId=order["orderId"]))
+
+    # Execute all tasks in parallel
+    details = await asyncio.gather(*tasks, return_exceptions=True)
+
+    result = []
+
+    # Process results
+    for order, detail in zip(orders_list, details):
+        if isinstance(detail, Exception):
+            print(f"[ERROR] Failed API call for orderId {order['orderId']}: {detail}")
+            result.append({
+                "orderId": order["orderId"],
+                "error": str(detail)
+            })
+            continue
+
+        # Safely access keys using .get to prevent crashes if API changes
+        result_data = detail.get("result", {})
+        result.append({
+            "orderId": order["orderId"],
+            "paymentType": result_data.get("paymentType"),
+            "status": result_data.get("status"),
+        })
+
+    return result
+
+
+# --- 2. The Simplified Specific Functions ---
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_sell_order_details(client: P2P):
-
+    # Step 1: Get the specific IDs (this is the only part that differs)
     orders_list = await get_sell_order_id(client=client)
 
     if not orders_list:
         print("NO PENDING SELL ORDERS FOUND")
-        return []  # no orders found
+        return []
 
-    tasks = []
-    for order in orders_list:                                       #This code builds a list of coroutines but does NOT execute them yet
-        tasks.append(client.get_order_details(orderId=order["orderId"]))
-
-    details = await asyncio.gather(*tasks, return_exceptions=True)  #'.gather' takes ALL waiting tasks, launches them together, waits until ALL
-                                                                    # complete and then returns results as a list in the same order as input
-
-    result = []
-
-    for order, detail in zip(orders_list, details):                 # zip pairs each original order dict (order) with each API result (resp)
-        if isinstance(detail, Exception):                           # and combines them into the requested format
-            print(f"[ERROR] Failed API call for orderId {order['orderId']}: {detail}")
-            result.append({
-                "orderId": order["orderId"],
-                "error": str(detail)
-            })
-            continue
-
-        result.append({
-            "orderId": order["orderId"],
-            "paymentType": detail["result"]["paymentType"]
-        })
-
-    return result
+    # Step 2: Delegate the heavy lifting to the generic function
+    return await get_order_details_generic(client, orders_list)
 
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_buy_order_details(client: P2P):
-
+    # Step 1: Get the specific IDs
     orders_list = await get_buy_order_id(client=client)
 
     if not orders_list:
         print("NO PENDING BUY ORDERS FOUND")
-        return []  # no orders found
+        return []
 
-    tasks = []
-    for order in orders_list:                                       #This code builds a list of coroutines but does NOT execute them yet
-        tasks.append(client.get_order_details(orderId=order["orderId"]))
+    # Step 2: Delegate the heavy lifting to the generic function
+    return await get_order_details_generic(client, orders_list)
 
-    details = await asyncio.gather(*tasks, return_exceptions=True)  #'.gather' takes ALL waiting tasks, launches them together, waits until ALL
-                                                                    # complete and then returns results as a list in the same order as input
 
-    result = []
+#TODO: Need more work on this one
 
-    for order, detail in zip(orders_list, details):                 # zip pairs each original order dict (order) with each API result (resp)
-        if isinstance(detail, Exception):                           # and combines them into the requested format
-            print(f"[ERROR] Failed API call for orderId {order['orderId']}: {detail}")
-            result.append({
-                "orderId": order["orderId"],
-                "error": str(detail)
-            })
-            continue
+# async def verify_transfer(client: P2P):
+#     status_sell = await get_pending_sell_order_details(client=client)
+#     status_buy = await get_pending_buy_order_details(client=client)
+#     print("Status sell:", status_sell)
+#     print("Status buy:", status_buy)
+#     if not status_sell:
+#         print("No sell transfer at this moment")
+#
+#     if not status_buy:
+#         print("No buy transfer at this moment")
+#
+#     sell_tasks_status = []
+#     for status in status_sell:
+#         sell_tasks_status.append(status_sell[0]['status'])
+#     try:
+#         status_s = status_sell[0]['status']
+#         status_b = status_buy[0]['status']
+#         if not status_s:
+#             print("No SELL transfer at this moment ('status_s')")
+#         if status_s:
+#             print(status_s)
+#         if not status_b:
+#             print("No BUY transfer at this moment ('status_b')")
+#         if status_b:
+#             print(status_b)
+#     except Exception as e:
+#         print(f"Testy error: {e}")
+#     return []
+#     # status_a = status[2]
+#     # if status_a == 20:
+#     #     print("Time to verify transfer")
+#     # elif not status_a == 20:
+#     #     print("No transfer at this moment")
+#     # return status_a
 
-        result.append({
-            "orderId": order["orderId"],
-            "paymentType": detail["result"]["paymentType"]
-        })
 
-    return result
+async def verify_transfer(client: P2P):
+    # Fetch the details
+    status_sell = await get_pending_sell_order_details(client=client)
+    status_buy = await get_pending_buy_order_details(client=client)
+
+    print("Status sell:", status_sell)
+    print("Status buy:", status_buy)
+
+    # --- FIX 1 & 2: Iterate instead of indexing ---
+
+    # Handle Sell Orders
+    if not status_sell:
+        print("No sell transfer at this moment")
+    else:
+        # Loop through ALL orders, not just the first one [0]
+        for order in status_sell:
+            # Safety check: ensure we didn't get an error packet from the previous function
+            if "error" in order:
+                print(f"Skipping sell order {order.get('orderId')} due to fetch error.")
+                continue
+
+            status_s = order.get('status')
+            if status_s:
+                print(f"Sell Order {order.get('orderId')} status: {status_s}")
+
+    # Handle Buy Orders
+    if not status_buy:
+        print("No buy transfer at this moment")
+    else:
+        # Loop through ALL orders, not just the first one [0]
+        for order in status_buy:
+            if "error" in order:
+                print(f"Skipping buy order {order.get('orderId')} due to fetch error.")
+                continue
+
+            status_b = order.get('status')
+            if status_b:
+                print(f"Buy Order {order.get('orderId')} status: {status_b}")
+
+    return []
+
 
 
 async def main():
@@ -517,22 +624,58 @@ async def main():
           )
 
     print("Buy ad active:",
-          await activate_wise_buy_ad(client=api)
+          await update_wise_ad(
+              client=api,
+              ad_id=TEST_CONFIG.buy_ad_id,
+              side=AdSide.BUY,
+              price=0.97,
+              min_amount=150,
+              max_amount=200,
+              remark="Contact @kolya5544 on Telegram once you've paid.",
+              action=ActionType.ACTIVATE,
+          )
           )
 
     print("Sell ad active:",
-          await activate_wise_sell_ad(client=api)
+          await update_wise_ad(
+              client=api,
+              ad_id=TEST_CONFIG.sell_ad_id,
+              side=AdSide.BUY,
+              price=0.97,
+              min_amount=150,
+              max_amount=200,
+              remark="Contact @kolya5544 on Telegram once you've paid.",
+              action=ActionType.ACTIVATE,
+          )
           )
 
     """FOR some reason to remove/activate ad I have to shadow print("modify ads") below"""
 
     """REQUIRES ATTENTION!"""
     print("Modify buy ad: ",
-          await modify_wise_buy_ad(client=api)
+          await update_wise_ad(
+              client=api,
+              ad_id=TEST_CONFIG.buy_ad_id,
+              side=AdSide.BUY,
+              price=0.97,
+              min_amount=150,
+              max_amount=200,
+              remark="Contact @kolya5544 on Telegram once you've paid.",
+              action=ActionType.MODIFY,
+          )
           )
 
     print("Modify sell ad: ",
-          await modify_wise_sell_ad(client=api)
+        await update_wise_ad(
+            client=api,
+            ad_id=TEST_CONFIG.sell_ad_id,
+            side=AdSide.SELL,
+            price=0.97,
+            min_amount=150,
+            max_amount=200,
+            remark="Contact @kolya5544 on Telegram once you've paid.",
+            action=ActionType.MODIFY,
+        )
           )
 
     """KEEP INACTIVE SO CALLS DO NOT CONFLICT WITH EACH OTHER"""
@@ -649,6 +792,7 @@ async def main():
 
         while True:
             await display_balance_and_transactions(client, profile_id, currency="USD")
+            await verify_transfer(client=api)
             await asyncio.sleep(30)
         #
     # await api.close_session()
