@@ -189,7 +189,7 @@ class ActionType(StrEnum):
     MODIFY = "MODIFY"
     ACTIVATE = "ACTIVE"
 
-
+STATUS_ONLINE = 10
 DEFAULT_TOKEN_ID = "USDT"
 DEFAULT_CURRENCY_ID = "USD"
 DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs
@@ -339,32 +339,42 @@ async def remove_wise_ad(
 
 #TODO: Think of dynamic price change based on market sentiment
 #TODO: Adjust price, min/max_amount, etc.
-#TODO: There's an error in ad_management() missing 1 required positional argument: 'wise_balance'
+#TODO: Think if you need to split the func() into 3 separate once: data(), buy_logic(), sell_logic()
+
 async def ad_management(client: P2P, wise_balance: float):
+
+
+    # Fetch all data concurrently
+    try:
+        bybit_balance_result, pending_buys, buy_ad_details, sell_ad_details = await asyncio.gather(
+            get_bybit_balance(client),
+            fetch_pending_buy_orders(client),
+            client.get_ad_details(itemId=TEST_CONFIG.buy_ad_id),
+            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id)
+        )
+
+        bybit_balance = float(bybit_balance_result)
+        buy_ad_info = buy_ad_details.get("result", {})
+        sell_ad_info = sell_ad_details.get("result", {})
+
+        is_buy_active = buy_ad_info.get("status") == STATUS_ONLINE
+        is_sell_active = sell_ad_info.get("status") == STATUS_ONLINE
+
+    except Exception as e:
+        # TODO: Add Telegram msg in case of failure.
+        print(f"⚠️ Failed to fetch ad details or balances: {e}")
+        return  # Stop execution if we can't see the ad state
+
     MIN_THRESHOLD = 500
     MIN_WISE_BALANCE = 500
 
-    bybit_present_balance = await get_bybit_balance(client)
-    bybit_balance = float(bybit_present_balance)
-    pending_buys = await fetch_pending_buy_orders(client)
-
-    try:
-        ad_details_resp = await client.get_ad_details(
-            itemId=TEST_CONFIG.buy_ad_id)
-        ad_info = ad_details_resp.get("result", {})
-
-        is_ad_active = ad_info.get("status") == 10
-
-    except Exception as e:
-        print(f"⚠️ Failed to fetch ad details: {e}")
-        return  # Stop execution if we can't see the ad state
-
-    # 1. Calculate locked liquidity for BUY orders
+    # Calculate locked liquidity for BUY orders
     locked_funds = 0.0
     if pending_buys:
         for order in pending_buys:
             locked_funds += float(order.get("amount", 0))
-    # 2. Calculate effective liquidity for BUY orders
+
+    # Calculate effective liquidity for BUY orders
     effective_balance = wise_balance - locked_funds - MIN_WISE_BALANCE
     """Remove the line below. It's good for illustration only"""
     print(f"🏦 Wise: ${wise_balance} | 🔒 Locked in Orders: ${locked_funds} | 🟢 Effective: ${effective_balance}")
@@ -376,13 +386,13 @@ async def ad_management(client: P2P, wise_balance: float):
     if effective_balance >= MIN_THRESHOLD:
         new_max = int(effective_balance)
 
-        if is_ad_active:
+        if is_buy_active:
             action_to_take = ActionType.MODIFY
-            log_msg = "Ad is currently active, Modifying ad instead"
+            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
         else:
             action_to_take = ActionType.ACTIVATE
-            log_msg = "Ad is currently inactive, Activating ad instead"
-        print(f"{log_msg} | New max: {new_max}")
+            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
+        print(f"{log_msg} | New max: {new_max}")  # Delete this line. Good for illustration only
 
         await update_wise_ad(
             client=client,
@@ -396,12 +406,13 @@ async def ad_management(client: P2P, wise_balance: float):
         )
 
     else:
-        print("📉 Effective balance below 500 or active orders exist. Removing Buy Ad.")
+        print(
+            "📉 Effective balance below 500 or active orders exist. Removing Buy Ad.")  # Delete this line. Good for illustration only
         await remove_wise_ad(client=client,
                              ad_id=TEST_CONFIG.buy_ad_id,
                              )
 
-#TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
+    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
     if effective_balance > 100:
         await remove_wise_ad(
             client=client,
@@ -413,15 +424,16 @@ async def ad_management(client: P2P, wise_balance: float):
     # SELL AD LOGIC #
     #################
     """Sell ad removed IF present balance < 100usdt on ByBit account. Otherwise the ad will remain active"""
-    if is_ad_active:
-        action_to_take = ActionType.MODIFY
-        log_msg = "Ad is currently active, Modifying ad instead"
-    else:
-        action_to_take = ActionType.ACTIVATE
-        log_msg = "Ad is currently inactive, Activating ad instead"
-    print(f"{log_msg}")
-
     if bybit_balance >= 100:
+
+        if is_sell_active:
+            action_to_take = ActionType.MODIFY
+            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
+        else:
+            action_to_take = ActionType.ACTIVATE
+            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
+        print(f"{log_msg}")  # Delete this line. Good for illustration only
+
         await update_wise_ad(
             client=client,
             ad_id=TEST_CONFIG.sell_ad_id,
@@ -439,7 +451,7 @@ async def ad_management(client: P2P, wise_balance: float):
         )
         print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
 
-    #TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
+    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
     if bybit_balance > 100:
         await remove_wise_ad(
             client=client,
@@ -933,6 +945,7 @@ async def main():
                 await verify_transfer(client=api)
 
             except Exception as e:
+                # TODO: Add Telegram msg in case of failure.
                 print(f"CRITICAL LOOP ERROR: {e}")
             await asyncio.sleep(30)
         #
