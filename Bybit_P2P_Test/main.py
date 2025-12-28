@@ -1,9 +1,5 @@
 '''cannot use mark_as_paid() with USD on Wise, not sure about Revolut. Should be good with EUR'''
 
-"""Removed func():
-fetch_test_ad_details(), fetch_ads_list(), fetch_wise_buy_ad(), fetch_wise_sell_ad(), fetch_list_of_sell_orders(),
-fetch_bybit_counterparty_info()"""
-
 
 from async_bybit_p2p import P2P
 import asyncio
@@ -17,6 +13,7 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import TypedDict
 
+
 #=====================
 #    WISE Cluster
 #=====================
@@ -29,21 +26,28 @@ headers = {
     "Content-Type": "application/json"
 }
 
-async def get_profiles(client):
+async def get_profiles(wise_client):
     """Fetch user profiles."""
-    r = await client.get(f"{base_url}/v2/profiles")
+    r = await wise_client.get(f"{base_url}/v2/profiles")
     r.raise_for_status()
     return r.json()
 
+async def get_wise_balance_value(wise_client, profile_id, currency="USD") -> float:
+    balances = await get_wise_balances(wise_client, profile_id)
+    for b in balances:
+        if b["currency"] == currency:
+            return float(b["amount"]["value"])
+    return 0.0
 
-async def get_wise_balances(client, profile_id):
+"""Think of removing/refactoring func() below, since it only suitable for representing purposes"""
+async def get_wise_balances(wise_client, profile_id):
     """Fetch balances for business account."""
-    r = await client.get(f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD")
+    r = await wise_client.get(f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD")
     r.raise_for_status()
     return r.json()
 
 """Original code:"""
-async def get_incoming_transfers_csv(client, profile_id, account_id, currency):
+async def get_incoming_transfers_csv(wise_client, profile_id, account_id, currency):
     """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
     today = datetime.now(timezone.utc).date()  # timezone-aware UTC
     start = f"{today}T00:00:00.000Z"
@@ -54,7 +58,7 @@ async def get_incoming_transfers_csv(client, profile_id, account_id, currency):
         f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
     )
 
-    response = await client.get(url)
+    response = await wise_client.get(url)
     response.raise_for_status()
 
     csv_text = response.text
@@ -73,7 +77,7 @@ async def get_incoming_transfers_csv(client, profile_id, account_id, currency):
     return incoming
 
 
-async def get_outgoing_transfers_csv(client, profile_id, account_id, currency):
+async def get_outgoing_transfers_csv(wise_client, profile_id, account_id, currency):
     """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
     today = datetime.now(timezone.utc).date()  # timezone-aware UTC
     start = f"{today}T00:00:00.000Z"
@@ -84,7 +88,7 @@ async def get_outgoing_transfers_csv(client, profile_id, account_id, currency):
         f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
     )
 
-    response = await client.get(url)
+    response = await wise_client.get(url)
     response.raise_for_status()
 
     csv_text = response.text
@@ -103,8 +107,8 @@ async def get_outgoing_transfers_csv(client, profile_id, account_id, currency):
     return outgoing
 
 
-async def display_balance_and_transactions(client, profile_id, currency="USD"):
-    balances = await get_wise_balances(client, profile_id)
+async def display_balance_and_transactions(wise_client, profile_id, currency="USD"):
+    balances = await get_wise_balances(wise_client, profile_id)
 
     account = None
     for b in balances:
@@ -118,7 +122,7 @@ async def display_balance_and_transactions(client, profile_id, currency="USD"):
         print(f"❌ No {currency} balance found.")
         return
 
-    incoming_today = await get_incoming_transfers_csv(client, profile_id, account["id"], currency)
+    incoming_today = await get_incoming_transfers_csv(wise_client, profile_id, account["id"], currency)
 
     if incoming_today:
         print("📥 Incoming transfers today:")
@@ -127,7 +131,7 @@ async def display_balance_and_transactions(client, profile_id, currency="USD"):
     else:
         print("⚠️ No incoming transfers today.")
 
-    outgoing_today = await get_outgoing_transfers_csv(client, profile_id, account["id"], currency)
+    outgoing_today = await get_outgoing_transfers_csv(wise_client, profile_id, account["id"], currency)
 
     if outgoing_today:
         print("📥 Outgoing transfers today:")
@@ -150,6 +154,7 @@ async def get_bybit_balance(client: P2P):
         )
         present_balance = current_balance["result"]["balance"][0]["transferBalance"]
         return present_balance
+
     except Exception as e:
         print(f"Failed to fetch balance: {e}")
         # TODO: add sending a Telegram msg in case of failure instead of printing error
@@ -157,7 +162,7 @@ async def get_bybit_balance(client: P2P):
         raise
 
 
-
+"""Remove next 2 func below once all set"""
 async def fetch_wise_buy_ad_details(client: P2P):
     wise_buy_ad = await client.get_ad_details(itemId="1799865939992154112")
     return wise_buy_ad
@@ -188,7 +193,8 @@ class ActionType(StrEnum):
 DEFAULT_TOKEN_ID = "USDT"
 DEFAULT_CURRENCY_ID = "USD"
 DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs
-
+#TODO: Add remark
+REMARK = "PASS"
 
 DEFAULT_TRADING_PREFERENCES = {
     "hasUnPostAd": 0,
@@ -258,7 +264,7 @@ def build_ad_payload(
     price: float,
     min_amount: int,
     max_amount: int,
-    remark: str,
+    remark: REMARK,
     action_type: ActionType,
     quantity: str = "200",
     payment_period: str = "15",
@@ -279,7 +285,7 @@ def build_ad_payload(
         "price": price,
         "minAmount": min_amount,
         "maxAmount": max_amount,
-        "remark": remark,
+        "remark": REMARK,
         "tradingPreferenceSet": DEFAULT_TRADING_PREFERENCES,
         "paymentIds": DEFAULT_PAYMENT_IDS,
         "actionType": action_type,
@@ -330,6 +336,116 @@ async def remove_wise_ad(
         ad_id=ad_id,
     )
     return await client.remove_ad(**payload)
+
+#TODO: Think of dynamic price change based on market sentiment
+#TODO: Adjust price, min/max_amount, etc.
+#TODO: There's an error in ad_management() missing 1 required positional argument: 'wise_balance'
+async def ad_management(client: P2P, wise_balance: float):
+    MIN_THRESHOLD = 500
+    MIN_WISE_BALANCE = 500
+
+    bybit_present_balance = await get_bybit_balance(client)
+    bybit_balance = float(bybit_present_balance)
+    pending_buys = await fetch_pending_buy_orders(client)
+
+    try:
+        ad_details_resp = await client.get_ad_details(
+            itemId=TEST_CONFIG.buy_ad_id)
+        ad_info = ad_details_resp.get("result", {})
+
+        is_ad_active = ad_info.get("status") == 10
+
+    except Exception as e:
+        print(f"⚠️ Failed to fetch ad details: {e}")
+        return  # Stop execution if we can't see the ad state
+
+    # 1. Calculate locked liquidity for BUY orders
+    locked_funds = 0.0
+    if pending_buys:
+        for order in pending_buys:
+            locked_funds += float(order.get("amount", 0))
+    # 2. Calculate effective liquidity for BUY orders
+    effective_balance = wise_balance - locked_funds - MIN_WISE_BALANCE
+    """Remove the line below. It's good for illustration only"""
+    print(f"🏦 Wise: ${wise_balance} | 🔒 Locked in Orders: ${locked_funds} | 🟢 Effective: ${effective_balance}")
+
+    ################
+    # BUY AD LOGIC #
+    ################
+
+    if effective_balance >= MIN_THRESHOLD:
+        new_max = int(effective_balance)
+
+        if is_ad_active:
+            action_to_take = ActionType.MODIFY
+            log_msg = "Ad is currently active, Modifying ad instead"
+        else:
+            action_to_take = ActionType.ACTIVATE
+            log_msg = "Ad is currently inactive, Activating ad instead"
+        print(f"{log_msg} | New max: {new_max}")
+
+        await update_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.buy_ad_id,
+            side=AdSide.BUY,
+            price=0.97,
+            min_amount=150,
+            max_amount=new_max,
+            remark=REMARK,
+            action=action_to_take,
+        )
+
+    else:
+        print("📉 Effective balance below 500 or active orders exist. Removing Buy Ad.")
+        await remove_wise_ad(client=client,
+                             ad_id=TEST_CONFIG.buy_ad_id,
+                             )
+
+#TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
+    if effective_balance > 100:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.buy_ad_id
+        )
+        print("HARD BUY AD REMOVE EXECUTED")
+
+    #################
+    # SELL AD LOGIC #
+    #################
+    """Sell ad removed IF present balance < 100usdt on ByBit account. Otherwise the ad will remain active"""
+    if is_ad_active:
+        action_to_take = ActionType.MODIFY
+        log_msg = "Ad is currently active, Modifying ad instead"
+    else:
+        action_to_take = ActionType.ACTIVATE
+        log_msg = "Ad is currently inactive, Activating ad instead"
+    print(f"{log_msg}")
+
+    if bybit_balance >= 100:
+        await update_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id,
+            side=AdSide.SELL,
+            price=1.05,
+            min_amount=150,
+            max_amount=200,
+            remark=REMARK,
+            action=action_to_take
+        )
+    else:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id,
+        )
+        print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
+
+    #TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
+    if bybit_balance > 100:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id,
+        )
+        print("HARD SELL AD REMOVE EXECUTED")
 
 
 async def fetch_pending_sell_orders(client: P2P):
@@ -572,7 +688,7 @@ async def verify_transfer(client: P2P):
     if not status_sell:
         print("No sell transfer at this moment")
     else:
-        # Loop through ALL orders, not just the first one [0]
+        # Loop through ALL sell orders
         for order in status_sell:
             # Safety check: ensure we didn't get an error packet from the previous function
             if "error" in order:
@@ -587,7 +703,7 @@ async def verify_transfer(client: P2P):
     if not status_buy:
         print("No buy transfer at this moment")
     else:
-        # Loop through ALL orders, not just the first one [0]
+        # Loop through ALL buy orders
         for order in status_buy:
             if "error" in order:
                 print(f"Skipping buy order {order.get('orderId')} due to fetch error.")
@@ -623,10 +739,7 @@ async def main():
           await fetch_wise_sell_ad_details(client=api)
           )
 
-# TODO: Add remove/activate/modify logic
-# a.k.a if [present_balance] < 500usdt:
-    # remove_wise_ad
-    #etc.
+
 
     print("Buy ad active:",
           await update_wise_ad(
@@ -645,8 +758,8 @@ async def main():
           await update_wise_ad(
               client=api,
               ad_id=TEST_CONFIG.sell_ad_id,
-              side=AdSide.BUY,
-              price=0.97,
+              side=AdSide.SELL,
+              price=1.05,
               min_amount=150,
               max_amount=200,
               remark="Contact @kolya5544 on Telegram once you've paid.",
@@ -654,9 +767,8 @@ async def main():
           )
           )
 
-    """FOR some reason to remove/activate ad I have to shadow print("modify ads") below"""
 
-    """REQUIRES ATTENTION!"""
+    #TODO: add logic if there's an error in displaying an ad
     print("Modify buy ad: ",
           await update_wise_ad(
               client=api,
@@ -675,7 +787,7 @@ async def main():
             client=api,
             ad_id=TEST_CONFIG.sell_ad_id,
             side=AdSide.SELL,
-            price=0.97,
+            price=1.05,
             min_amount=150,
             max_amount=200,
             remark="Contact @kolya5544 on Telegram once you've paid.",
@@ -690,12 +802,20 @@ async def main():
             ad_id=TEST_CONFIG.buy_ad_id,
           )
     )
+
     print("Test sell ad removed:",
           await remove_wise_ad(
               client=api,
               ad_id=TEST_CONFIG.sell_ad_id,
           )
-    )
+          )
+
+    # print(await ad_management(
+    #     client=api,
+    #     wise_balance=
+    #     )
+    # )
+
 
 
     # TODO: Once marked as paid: paymentType == 78 AND timestamp (withing 30mins) AND Wise sender name == ByBit AND Wise sender amount == ByBit -> Release funds
@@ -799,8 +919,21 @@ async def main():
         print("🔁 Starting continuous Wise balance & incoming transfer tracking every 30 seconds...\n")
 
         while True:
-            await display_balance_and_transactions(client, profile_id, currency="USD")
-            await verify_transfer(client=api)
+            try:
+                # 1. Get Real Wise Balance
+                current_wise_usd = await get_wise_balance_value(client, profile_id, "USD")
+
+                # 2. Run Buy Ad Logic (Using Scenario 3)
+                await ad_management(api, current_wise_usd)
+
+                # 4. Display functionality
+                await display_balance_and_transactions(client, profile_id, "USD")
+
+                # 5. Check transfers
+                await verify_transfer(client=api)
+
+            except Exception as e:
+                print(f"CRITICAL LOOP ERROR: {e}")
             await asyncio.sleep(30)
         #
     # await api.close_session()
