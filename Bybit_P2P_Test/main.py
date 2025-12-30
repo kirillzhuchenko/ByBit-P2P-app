@@ -184,6 +184,9 @@ class AdSide(IntEnum):
     BUY = 0
     SELL = 1
 
+class OrderSide(IntEnum):
+    BUY = 0
+    SELL = 1
 
 class ActionType(StrEnum):
     MODIFY = "MODIFY"
@@ -266,7 +269,7 @@ def build_ad_payload(
     max_amount: int,
     remark: REMARK,
     action_type: ActionType,
-    quantity: str = "200",
+    quantity: str,
     payment_period: str = "15",
 ) -> AdPayload:
     if price <= 0:
@@ -308,6 +311,7 @@ async def update_wise_ad(
     max_amount: int,
     remark: str,
     action: ActionType,
+    quantity: str
 ):
     payload = build_ad_payload(
         ad_id=ad_id,
@@ -317,6 +321,7 @@ async def update_wise_ad(
         max_amount=max_amount,
         remark=remark,
         action_type=action,
+        quantity=quantity
     )
     return await client.update_ad(**payload)
 
@@ -341,9 +346,8 @@ async def remove_wise_ad(
 #TODO: Adjust price, min/max_amount, etc.
 #TODO: Think if you need to split the func() into 3 separate once: data(), buy_logic(), sell_logic()
 
+"""The function itself is bulky but works just fine"""
 async def ad_management(client: P2P, wise_balance: float):
-
-
     # Fetch all data concurrently
     try:
         bybit_balance_result, pending_buys, buy_ad_details, sell_ad_details = await asyncio.gather(
@@ -384,7 +388,7 @@ async def ad_management(client: P2P, wise_balance: float):
     ################
 
     if effective_balance >= MIN_THRESHOLD:
-        new_max = int(effective_balance)
+        new_max = str(effective_balance) # new_max is required to be str.
 
         if is_buy_active:
             action_to_take = ActionType.MODIFY
@@ -400,9 +404,10 @@ async def ad_management(client: P2P, wise_balance: float):
             side=AdSide.BUY,
             price=0.97,
             min_amount=150,
-            max_amount=new_max,
+            max_amount=5000,
             remark=REMARK,
             action=action_to_take,
+            quantity=new_max,
         )
 
     else:
@@ -423,6 +428,7 @@ async def ad_management(client: P2P, wise_balance: float):
     #################
     # SELL AD LOGIC #
     #################
+    effective_bybit_balance = str(bybit_balance) # Required to be a str
     """Sell ad removed IF present balance < 100usdt on ByBit account. Otherwise the ad will remain active"""
     if bybit_balance >= 100:
 
@@ -442,7 +448,8 @@ async def ad_management(client: P2P, wise_balance: float):
             min_amount=150,
             max_amount=200,
             remark=REMARK,
-            action=action_to_take
+            action=action_to_take,
+            quantity=effective_bybit_balance
         )
     else:
         await remove_wise_ad(
@@ -462,7 +469,7 @@ async def ad_management(client: P2P, wise_balance: float):
 
 async def fetch_pending_sell_orders(client: P2P):
     orders_raw = await client.get_pending_orders(
-        side=1,
+        side=OrderSide.SELL,
         page=1,
         size=20
     )
@@ -483,7 +490,7 @@ async def fetch_pending_sell_orders(client: P2P):
 """NEED THIS FUNC ONLY TO FETCH RECIPIENT'S DATA, FOR paymentType PLEASE REFER TO 'get_pending_sell_order_details()'"""
 async def fetch_pending_buy_orders(client: P2P):
     orders_raw = await client.get_pending_orders(
-        side=0,
+        side=OrderSide.BUY,
         page=1,
         size=20
     )
@@ -601,7 +608,6 @@ async def get_order_details_generic(client: P2P, orders_list: list):
 
     result = []
 
-    # Process results
     for order, detail in zip(orders_list, details):
         if isinstance(detail, Exception):
             print(f"[ERROR] Failed API call for orderId {order['orderId']}: {detail}")
@@ -611,7 +617,6 @@ async def get_order_details_generic(client: P2P, orders_list: list):
             })
             continue
 
-        # Safely access keys using .get to prevent crashes if API changes
         result_data = detail.get("result", {})
         result.append({
             "orderId": order["orderId"],
@@ -625,26 +630,22 @@ async def get_order_details_generic(client: P2P, orders_list: list):
 # --- 2. The Simplified Specific Functions ---
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_sell_order_details(client: P2P):
-    # Step 1: Get the specific IDs (this is the only part that differs)
     orders_list = await get_sell_order_id(client=client)
 
     if not orders_list:
         print("NO PENDING SELL ORDERS FOUND")
         return []
 
-    # Step 2: Delegate the heavy lifting to the generic function
     return await get_order_details_generic(client, orders_list)
 
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_buy_order_details(client: P2P):
-    # Step 1: Get the specific IDs
     orders_list = await get_buy_order_id(client=client)
 
     if not orders_list:
         print("NO PENDING BUY ORDERS FOUND")
         return []
 
-    # Step 2: Delegate the heavy lifting to the generic function
     return await get_order_details_generic(client, orders_list)
 
 
@@ -753,74 +754,74 @@ async def main():
 
 
 
-    print("Buy ad active:",
-          await update_wise_ad(
-              client=api,
-              ad_id=TEST_CONFIG.buy_ad_id,
-              side=AdSide.BUY,
-              price=0.97,
-              min_amount=150,
-              max_amount=200,
-              remark="Contact @kolya5544 on Telegram once you've paid.",
-              action=ActionType.ACTIVATE,
-          )
-          )
-
-    print("Sell ad active:",
-          await update_wise_ad(
-              client=api,
-              ad_id=TEST_CONFIG.sell_ad_id,
-              side=AdSide.SELL,
-              price=1.05,
-              min_amount=150,
-              max_amount=200,
-              remark="Contact @kolya5544 on Telegram once you've paid.",
-              action=ActionType.ACTIVATE,
-          )
-          )
-
-
-    #TODO: add logic if there's an error in displaying an ad
-    print("Modify buy ad: ",
-          await update_wise_ad(
-              client=api,
-              ad_id=TEST_CONFIG.buy_ad_id,
-              side=AdSide.BUY,
-              price=0.97,
-              min_amount=150,
-              max_amount=200,
-              remark="Contact @kolya5544 on Telegram once you've paid.",
-              action=ActionType.MODIFY,
-          )
-          )
-
-    print("Modify sell ad: ",
-        await update_wise_ad(
-            client=api,
-            ad_id=TEST_CONFIG.sell_ad_id,
-            side=AdSide.SELL,
-            price=1.05,
-            min_amount=150,
-            max_amount=200,
-            remark="Contact @kolya5544 on Telegram once you've paid.",
-            action=ActionType.MODIFY,
-        )
-          )
-
-
-    print("Test buy ad removed:",
-          await remove_wise_ad(
-            client=api,
-            ad_id=TEST_CONFIG.buy_ad_id,
-          )
-    )
-
-    print("Test sell ad removed:",
-          await remove_wise_ad(
-              client=api,
-              ad_id=TEST_CONFIG.sell_ad_id,
-          )
-          )
+    # print("Buy ad active:",
+    #       await update_wise_ad(
+    #           client=api,
+    #           ad_id=TEST_CONFIG.buy_ad_id,
+    #           side=AdSide.BUY,
+    #           price=0.97,
+    #           min_amount=150,
+    #           max_amount=200,
+    #           remark="Contact @kolya5544 on Telegram once you've paid.",
+    #           action=ActionType.ACTIVATE,
+    #       )
+    #       )
+    #
+    # print("Sell ad active:",
+    #       await update_wise_ad(
+    #           client=api,
+    #           ad_id=TEST_CONFIG.sell_ad_id,
+    #           side=AdSide.SELL,
+    #           price=1.05,
+    #           min_amount=150,
+    #           max_amount=200,
+    #           remark="Contact @kolya5544 on Telegram once you've paid.",
+    #           action=ActionType.ACTIVATE,
+    #       )
+    #       )
+    #
+    #
+    # #TODO: add logic if there's an error in displaying an ad
+    # print("Modify buy ad: ",
+    #       await update_wise_ad(
+    #           client=api,
+    #           ad_id=TEST_CONFIG.buy_ad_id,
+    #           side=AdSide.BUY,
+    #           price=0.97,
+    #           min_amount=150,
+    #           max_amount=200,
+    #           remark="Contact @kolya5544 on Telegram once you've paid.",
+    #           action=ActionType.MODIFY,
+    #       )
+    #       )
+    #
+    # print("Modify sell ad: ",
+    #     await update_wise_ad(
+    #         client=api,
+    #         ad_id=TEST_CONFIG.sell_ad_id,
+    #         side=AdSide.SELL,
+    #         price=1.05,
+    #         min_amount=150,
+    #         max_amount=200,
+    #         remark="Contact @kolya5544 on Telegram once you've paid.",
+    #         action=ActionType.MODIFY,
+    #     )
+    #       )
+    #
+    #
+    # print("Test buy ad removed:",
+    #       await remove_wise_ad(
+    #         client=api,
+    #         ad_id=TEST_CONFIG.buy_ad_id,
+    #       )
+    # )
+    #
+    # print("Test sell ad removed:",
+    #       await remove_wise_ad(
+    #           client=api,
+    #           ad_id=TEST_CONFIG.sell_ad_id,
+    #       )
+    #       )
 
     # print(await ad_management(
     #     client=api,
