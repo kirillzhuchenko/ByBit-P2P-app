@@ -12,7 +12,7 @@ import csv
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import TypedDict
-
+from notifier import send_telegram_message
 
 #=====================
 #    WISE Cluster
@@ -754,82 +754,6 @@ async def main():
 
 
 
-    # print("Buy ad active:",
-    #       await update_wise_ad(
-    #           client=api,
-    #           ad_id=TEST_CONFIG.buy_ad_id,
-    #           side=AdSide.BUY,
-    #           price=0.97,
-    #           min_amount=150,
-    #           max_amount=200,
-    #           remark="Contact @kolya5544 on Telegram once you've paid.",
-    #           action=ActionType.ACTIVATE,
-    #       )
-    #       )
-    #
-    # print("Sell ad active:",
-    #       await update_wise_ad(
-    #           client=api,
-    #           ad_id=TEST_CONFIG.sell_ad_id,
-    #           side=AdSide.SELL,
-    #           price=1.05,
-    #           min_amount=150,
-    #           max_amount=200,
-    #           remark="Contact @kolya5544 on Telegram once you've paid.",
-    #           action=ActionType.ACTIVATE,
-    #       )
-    #       )
-    #
-    #
-    # #TODO: add logic if there's an error in displaying an ad
-    # print("Modify buy ad: ",
-    #       await update_wise_ad(
-    #           client=api,
-    #           ad_id=TEST_CONFIG.buy_ad_id,
-    #           side=AdSide.BUY,
-    #           price=0.97,
-    #           min_amount=150,
-    #           max_amount=200,
-    #           remark="Contact @kolya5544 on Telegram once you've paid.",
-    #           action=ActionType.MODIFY,
-    #       )
-    #       )
-    #
-    # print("Modify sell ad: ",
-    #     await update_wise_ad(
-    #         client=api,
-    #         ad_id=TEST_CONFIG.sell_ad_id,
-    #         side=AdSide.SELL,
-    #         price=1.05,
-    #         min_amount=150,
-    #         max_amount=200,
-    #         remark="Contact @kolya5544 on Telegram once you've paid.",
-    #         action=ActionType.MODIFY,
-    #     )
-    #       )
-    #
-    #
-    # print("Test buy ad removed:",
-    #       await remove_wise_ad(
-    #         client=api,
-    #         ad_id=TEST_CONFIG.buy_ad_id,
-    #       )
-    # )
-    #
-    # print("Test sell ad removed:",
-    #       await remove_wise_ad(
-    #           client=api,
-    #           ad_id=TEST_CONFIG.sell_ad_id,
-    #       )
-    #       )
-
-    # print(await ad_management(
-    #     client=api,
-    #     wise_balance=
-    #     )
-    # )
-
-
 
     # TODO: Once marked as paid: paymentType == 78 AND timestamp (withing 30mins) AND Wise sender name == ByBit AND Wise sender amount == ByBit -> Release funds
     # if paymentType =! 78 -> Telegram text msg
@@ -945,13 +869,13 @@ async def main():
                 # 5. Check transfers
                 await verify_transfer(client=api)
 
+
             except Exception as e:
                 # TODO: Add Telegram msg in case of failure.
-                print(f"CRITICAL LOOP ERROR: {e}")
+                error_msg = f"CRITICAL LOOP ERROR: {e}"
+                error = "CRIT"
+                print(error_msg)
+                send_telegram_message(error)
             await asyncio.sleep(30)
-        #
-    # await api.close_session()
-
-
 
 asyncio.run(main())
