@@ -12,7 +12,49 @@ import csv
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import TypedDict
+from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
+
+
+
+#=====================
+#   Telegram Alerts
+#=====================
+
+alert = {
+    "bybit_balance": "⛔ATTENTION⛔ Failed to fetch ByBit Balance. Event loop has stopped.",
+    "bybit_msg": "⚠️ATTENTION⚠️ Failed to send ByBit Message. Attention required. Event loop is running.",
+    "ad_details": "⚠️ATTENTION⚠️ Failed to fetch ad details. Event loop has stopped.",
+    "wise_balance": "⛔ATTENTION⛔ Failed to fetch Wise Balance. Event loop has stopped.",
+    "wise_profiles": "⛔ATTENTION⛔ Failed to fetch Wise Profiles. Event loop has stopped.",
+    "payment_type": "⚠️ATTENTION⚠️ Payment type not recognized. Attention required.",
+    "buyer_name": "⚠️ATTENTION⚠️ Buyer RealName not recognized. Attention required.",
+    "amount": "⚠️ATTENTION⚠️ Amount not recognized. Attention required.",
+    "unknown":  "⚠️ATTENTION⚠️ Unknown issue! Attention required.",
+    "loop_error": "⛔ATTENTION⛔ CRITICAL LOOP ERROR. Event loop has stopped.",
+    "ad_payload": "⚠️ATTENTION⚠️ Failed to build ad payload. Attention required."
+}
+
+#=====================
+#    ByBit Message
+#=====================
+
+account_link = "https://wise.com/pay/business/ipzhuchenkollc"
+wise_tag = "@ipzhuchenkollc"
+
+message = [
+    "Hello!\n"
+     "🤖This order is being processed automatically by our P2P bot — no need to wait for a human response🤖\n\n"
+     "Please procced with the payment to IP ZHUCHENKO, LLC💼.\n\n"
+     "❗IMPORTANT❗\n\n"
+     "  ✅The name on ByBit and Wise MUST match to complete the order.\n"
+     "  ✅Corporate transfers are accepted.\n\n"
+     "Payment details:\n",
+    f"💸Account Link:\n {account_link}",
+    f"💸Wise Tag:\n {wise_tag}",
+    "📩If you have any questions, feel free to contact me on Telegram: @DeFi_Capital📩"
+]
+
 
 #=====================
 #    WISE Cluster
@@ -27,7 +69,6 @@ headers = {
 }
 
 async def get_profiles(wise_client):
-    """Fetch user profiles."""
     r = await wise_client.get(f"{base_url}/v2/profiles")
     r.raise_for_status()
     return r.json()
@@ -156,9 +197,7 @@ async def get_bybit_balance(client: P2P):
         return present_balance
 
     except Exception as e:
-        print(f"Failed to fetch balance: {e}")
-        # TODO: add sending a Telegram msg in case of failure instead of printing error
-        # 'raise' will abort current session after sending a telegram msg
+        send_telegram_message(f'{alert.get("bybit_balance")} -> {e})')
         raise
 
 
@@ -288,7 +327,7 @@ def build_ad_payload(
         "price": price,
         "minAmount": min_amount,
         "maxAmount": max_amount,
-        "remark": REMARK,
+        "remark": remark,
         "tradingPreferenceSet": DEFAULT_TRADING_PREFERENCES,
         "paymentIds": DEFAULT_PAYMENT_IDS,
         "actionType": action_type,
@@ -313,17 +352,20 @@ async def update_wise_ad(
     action: ActionType,
     quantity: str
 ):
-    payload = build_ad_payload(
-        ad_id=ad_id,
-        side=side,
-        price=price,
-        min_amount=min_amount,
-        max_amount=max_amount,
-        remark=remark,
-        action_type=action,
-        quantity=quantity
-    )
-    return await client.update_ad(**payload)
+    try:
+        payload = build_ad_payload(
+            ad_id=ad_id,
+            side=side,
+            price=price,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            remark=remark,
+            action_type=action,
+            quantity=quantity
+        )
+        return await client.update_ad(**payload)
+    except ValueError as e:
+        send_telegram_message(f'{alert.get("ad_payload")} -> {e})')
 
 
 def remove_ad_payload(
@@ -343,12 +385,11 @@ async def remove_wise_ad(
     return await client.remove_ad(**payload)
 
 #TODO: Think of dynamic price change based on market sentiment
-#TODO: Adjust price, min/max_amount, etc.
 #TODO: Think if you need to split the func() into 3 separate once: data(), buy_logic(), sell_logic()
 
 """The function itself is bulky but works just fine"""
 async def ad_management(client: P2P, wise_balance: float):
-    # Fetch all data concurrently
+
     try:
         bybit_balance_result, pending_buys, buy_ad_details, sell_ad_details = await asyncio.gather(
             get_bybit_balance(client),
@@ -365,8 +406,7 @@ async def ad_management(client: P2P, wise_balance: float):
         is_sell_active = sell_ad_info.get("status") == STATUS_ONLINE
 
     except Exception as e:
-        # TODO: Add Telegram msg in case of failure.
-        print(f"⚠️ Failed to fetch ad details or balances: {e}")
+        send_telegram_message(f'{alert.get("ad_details")} -> {e})')
         return  # Stop execution if we can't see the ad state
 
     MIN_THRESHOLD = 500
@@ -388,7 +428,8 @@ async def ad_management(client: P2P, wise_balance: float):
     ################
 
     if effective_balance >= MIN_THRESHOLD:
-        new_max = str(effective_balance) # new_max is required to be str.
+        new_max = str(Decimal(effective_balance).quantize      # new_max is required to be str.
+                      (Decimal("0.01"), rounding=ROUND_DOWN))  #Have to preform rounding due to platform limitations
 
         if is_buy_active:
             action_to_take = ActionType.MODIFY
@@ -446,7 +487,7 @@ async def ad_management(client: P2P, wise_balance: float):
             side=AdSide.SELL,
             price=1.05,
             min_amount=150,
-            max_amount=200,
+            max_amount=5000,
             remark=REMARK,
             action=action_to_take,
             quantity=effective_bybit_balance
@@ -524,6 +565,7 @@ async def get_chat_message(client: P2P):
     return msg["result"]["result"]
 
 
+#TODO: Think of adding QR-code. Payment link doesn't work with USD via Wise API calls
 async def send_chat_message(client: P2P):
     orders = await fetch_pending_sell_orders(client=client)
 
@@ -534,33 +576,18 @@ async def send_chat_message(client: P2P):
     for order in orders:
         order_id = order["order_id"]
         print(f"Sending message to {order_id}")  #see if i need this line of code
-        account_link = "https://wise.com/pay/business/ipzhuchenkollc"
-        payment_link = "not available at this time"
-        #TODO: HAVE TO ADD Payment QR-code instead of Payment link. Payment link doesn't work with USD via Wise API calls
         try:
-            response = await client.send_chat_message(
-                message=(f"Hello!\n"
-                        f"🤖This order is being processed automatically by our P2P bot — no need to wait for a human response🤖\n\n"
-                        f"Please procced with the payment to IP ZHUCHENKO, LLC💼.\n\n"
-                        f"❗IMPORTANT❗\n\n"
-                        f"  ✅The name on ByBit and Wise MUST match to complete the order.\n"
-                        f"  ✅Corporate transfers are accepted.\n\n"
-                        f"Payment details (also available under the Pay button):\n"
-                        f"  💸Wisetag: @ipzhuchenkollc\n"
-                        f"  💸Account link: {account_link}\n"
-                        f"  💸Payment link: {payment_link}\n\n"
-                        f"📩If you have any questions, feel free to contact me on Telegram: @DeFi_Capital📩"),
-                contentType="str",
-                orderId=order_id,
-                msgUuid=uuid.uuid4().hex,
-            )
-            print("Response:", response)
+            for msg in message:
+                await client.send_chat_message(
+                    message=msg,
+                    contentType="str",
+                    orderId=order_id,
+                    msgUuid=uuid.uuid4().hex,
+                )
+                await asyncio.sleep(0.5)
+            print(f"Message sequence sent for {order_id}")
         except Exception as e:
-            print(f"Failed to send message to order {order_id} -> {e}")
-            # TODO: Add sending a Telegram msg in case if the msg hasn't been sent. NO HARD/SOFT STOP REQUIRED.
-
-    print("All messages sent")
-
+            send_telegram_message(f'{alert.get("bybit_msg")} for {order_id} -> {e}')
 
 async def get_sell_order_id(client: P2P):
 
@@ -592,18 +619,12 @@ async def get_buy_order_id(client: P2P):
     return result
 
 
-# --- 1. The New Generic Helper Function ---
 async def get_order_details_generic(client: P2P, orders_list: list):
-    """
-    Takes a list of order dictionaries (containing 'orderId') and fetches
-    details for all of them concurrently.
-    """
-    # Create the tasks
+
     tasks = []
     for order in orders_list:
         tasks.append(client.get_order_details(orderId=order["orderId"]))
 
-    # Execute all tasks in parallel
     details = await asyncio.gather(*tasks, return_exceptions=True)
 
     result = []
@@ -627,7 +648,6 @@ async def get_order_details_generic(client: P2P, orders_list: list):
     return result
 
 
-# --- 2. The Simplified Specific Functions ---
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_sell_order_details(client: P2P):
     orders_list = await get_sell_order_id(client=client)
@@ -729,7 +749,7 @@ async def verify_transfer(client: P2P):
     return []
 
 
-
+#TODO: Think about alternating payment accounts every two month.
 async def main():
     api = P2P(
         testnet=False,
@@ -783,7 +803,7 @@ async def main():
     # #     print("Amount not recognized")
     # #     #TODO: Send Telegram msg
     # else:
-    #     print("Attention required")
+    #     print("Unknown issue")
     #     #TODO: Send Telegram msg
 
     print("Fetch last 20 Pending sell orders:",
@@ -848,7 +868,7 @@ async def main():
 
         if not business_profile:
             print("❌ No business profile found")
-            #TODO: If can't find a business profile -> send a Telegram msg
+            send_telegram_message(alert.get("wise_profiles"))
             raise
 
         profile_id = business_profile["id"]
@@ -857,25 +877,16 @@ async def main():
 
         while True:
             try:
-                # 1. Get Real Wise Balance
                 current_wise_usd = await get_wise_balance_value(client, profile_id, "USD")
-
-                # 2. Run Buy Ad Logic (Using Scenario 3)
                 await ad_management(api, current_wise_usd)
 
-                # 4. Display functionality
                 await display_balance_and_transactions(client, profile_id, "USD")
 
-                # 5. Check transfers
                 await verify_transfer(client=api)
 
-
             except Exception as e:
-                # TODO: Add Telegram msg in case of failure.
-                error_msg = f"CRITICAL LOOP ERROR: {e}"
-                error = "CRIT"
-                print(error_msg)
-                send_telegram_message(error)
+                send_telegram_message(f'{alert.get("loop_error")}, {e})')
+                raise
             await asyncio.sleep(30)
 
 asyncio.run(main())

@@ -31,12 +31,6 @@ async def main():
 
     await asyncio.to_thread(send_telegram_message, "🚀 Script Started: Heavy Task Analysis")
 
-    # try:
-    #     print("Work finished.")
-    #     await asyncio.to_thread(send_telegram_message, "✅ Script Finished Successfully")
-    # except Exception as e:
-    #     print(f"Error connecting to Telegram: {e}")
-
 if __name__ == "__main__":
 
     asyncio.run(main())
