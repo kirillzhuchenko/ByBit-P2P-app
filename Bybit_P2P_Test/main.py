@@ -32,7 +32,9 @@ alert = {
     "amount": "⚠️ATTENTION⚠️ Amount not recognized. Attention required.",
     "unknown":  "⚠️ATTENTION⚠️ Unknown issue! Attention required.",
     "loop_error": "⛔ATTENTION⛔ CRITICAL LOOP ERROR. Event loop has stopped.",
-    "ad_payload": "⚠️ATTENTION⚠️ Failed to build ad payload. Attention required."
+    "ad_payload": "⚠️ATTENTION⚠️ Failed to build ad payload. Attention required.",
+    "skip_sell": "⚠️ATTENTION⚠️ Skipping sell order due to fetch error. Order # ",
+    "skip_buy": "⚠️ATTENTION⚠️ Skipping buy order due to fetch error. Order # "
 }
 
 #=====================
@@ -54,7 +56,6 @@ message = [
     f"💸Wise Tag:\n {wise_tag}",
     "📩If you have any questions, feel free to contact me on Telegram: @DeFi_Capital📩"
 ]
-
 
 #=====================
 #    WISE Cluster
@@ -648,6 +649,9 @@ async def get_order_details_generic(client: P2P, orders_list: list):
     return result
 
 
+
+
+
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_sell_order_details(client: P2P):
     orders_list = await get_sell_order_id(client=client)
@@ -669,44 +673,6 @@ async def get_pending_buy_order_details(client: P2P):
     return await get_order_details_generic(client, orders_list)
 
 
-#TODO: Need more work on this one
-
-# async def verify_transfer(client: P2P):
-#     status_sell = await get_pending_sell_order_details(client=client)
-#     status_buy = await get_pending_buy_order_details(client=client)
-#     print("Status sell:", status_sell)
-#     print("Status buy:", status_buy)
-#     if not status_sell:
-#         print("No sell transfer at this moment")
-#
-#     if not status_buy:
-#         print("No buy transfer at this moment")
-#
-#     sell_tasks_status = []
-#     for status in status_sell:
-#         sell_tasks_status.append(status_sell[0]['status'])
-#     try:
-#         status_s = status_sell[0]['status']
-#         status_b = status_buy[0]['status']
-#         if not status_s:
-#             print("No SELL transfer at this moment ('status_s')")
-#         if status_s:
-#             print(status_s)
-#         if not status_b:
-#             print("No BUY transfer at this moment ('status_b')")
-#         if status_b:
-#             print(status_b)
-#     except Exception as e:
-#         print(f"Testy error: {e}")
-#     return []
-#     # status_a = status[2]
-#     # if status_a == 20:
-#     #     print("Time to verify transfer")
-#     # elif not status_a == 20:
-#     #     print("No transfer at this moment")
-#     # return status_a
-
-
 async def verify_transfer(client: P2P):
     # Fetch the details
     status_sell = await get_pending_sell_order_details(client=client)
@@ -714,8 +680,6 @@ async def verify_transfer(client: P2P):
 
     print("Status sell:", status_sell)
     print("Status buy:", status_buy)
-
-    # --- FIX 1 & 2: Iterate instead of indexing ---
 
     # Handle Sell Orders
     if not status_sell:
@@ -725,7 +689,7 @@ async def verify_transfer(client: P2P):
         for order in status_sell:
             # Safety check: ensure we didn't get an error packet from the previous function
             if "error" in order:
-                print(f"Skipping sell order {order.get('orderId')} due to fetch error.")
+                send_telegram_message(f"{alert.get("skip_sell")} {order.get('orderId')}")
                 continue
 
             status_s = order.get('status')
@@ -739,7 +703,7 @@ async def verify_transfer(client: P2P):
         # Loop through ALL buy orders
         for order in status_buy:
             if "error" in order:
-                print(f"Skipping buy order {order.get('orderId')} due to fetch error.")
+                send_telegram_message(f"{alert.get("skip_buy")} {order.get('orderId')}")
                 continue
 
             status_b = order.get('status')
