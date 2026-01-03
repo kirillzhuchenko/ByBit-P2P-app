@@ -550,6 +550,7 @@ async def fetch_pending_buy_orders(client: P2P):
             "order_id": o["id"],
             "name": o["sellerRealName"],
             "amount": o["amount"],
+            "createDate": o["createDate"],
         }
         result.append(entry)
 
@@ -695,28 +696,28 @@ async def verify_transfer(client: P2P) -> None:
     print("Status sell:", sell_orders)  # Remove before production
     print("Status buy:", buy_orders)
 
-    _process_orders(sell_orders, order_type="sell")
-    _process_orders(buy_orders, order_type="buy")
+    _process_orders(sell_orders, order_type=OrderSide.SELL)
+    _process_orders(buy_orders, order_type=OrderSide.BUY)
 
 
-def _process_orders(orders: list, order_type: str) -> None:
+def _process_orders(orders: list, order_type: int) -> None:
 
     if not orders:
         print(f"No {order_type} transfer at this moment")
         return
 
-    counterparty_name = "buyerRealName" if order_type == "sell" else "sellerRealName"
+    counterparty = "buyerRealName" if order_type == OrderSide.SELL else "sellerRealName"
 
     for order in orders:
         if "error" in order:
             order_id = order.get('orderId', 'unknown')
-            send_telegram_message(f"⚠️ATTENTION⚠️ Skipping transfer to {counterparty_name} / {order_id} due to fetch error.")
+            send_telegram_message(f"⚠️ATTENTION⚠️ Skipping transfer to {counterparty} / {order_id} due to fetch error.")
             print(f"Skipping {order_type} order {order_id} due to fetch error.")
             continue
 
         order_id = order.get('orderId')
         status = order.get('status')
-        counterparty_name = order.get(counterparty_name)
+        counterparty_name = order.get(counterparty)
         payment_type = order.get('paymentType')
         create_date = order.get('createDate')
         quantity = order.get('quantity')
