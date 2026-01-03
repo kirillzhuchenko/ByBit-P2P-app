@@ -232,10 +232,15 @@ class ActionType(StrEnum):
     MODIFY = "MODIFY"
     ACTIVATE = "ACTIVE"
 
-STATUS_ONLINE = 10
+class OrderStatus(IntEnum):
+    PENDING = 10
+    PAID = 20
+    APPEAL = 30
+
+AD_ONLINE = 10
 DEFAULT_TOKEN_ID = "USDT"
 DEFAULT_CURRENCY_ID = "USD"
-DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs
+DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs # Check what it's for
 #TODO: Add remark
 REMARK = "PASS"
 
@@ -403,8 +408,8 @@ async def ad_management(client: P2P, wise_balance: float):
         buy_ad_info = buy_ad_details.get("result", {})
         sell_ad_info = sell_ad_details.get("result", {})
 
-        is_buy_active = buy_ad_info.get("status") == STATUS_ONLINE
-        is_sell_active = sell_ad_info.get("status") == STATUS_ONLINE
+        is_buy_active = buy_ad_info.get("status") == AD_ONLINE
+        is_sell_active = sell_ad_info.get("status") == AD_ONLINE
 
     except Exception as e:
         send_telegram_message(f'{alert.get("ad_details")} -> {e})')
@@ -621,7 +626,6 @@ async def get_buy_order_id(client: P2P):
 
 
 async def get_order_details_generic(client: P2P, orders_list: list):
-
     tasks = []
     for order in orders_list:
         tasks.append(client.get_order_details(orderId=order["orderId"]))
@@ -640,15 +644,25 @@ async def get_order_details_generic(client: P2P, orders_list: list):
             continue
 
         result_data = detail.get("result", {})
-        result.append({
+
+        side = order.get("side")  # or result_data.get("side") depending on where it's stored
+
+        order_dict = {
             "orderId": order["orderId"],
             "paymentType": result_data.get("paymentType"),
             "status": result_data.get("status"),
-        })
+            "createDate": result_data.get("createDate"),
+            "quantity": result_data.get("quantity"),
+        }
+
+        if side == OrderSide.BUY:
+            order_dict["sellerRealName"] = result_data.get("sellerRealName")
+        elif side == OrderSide.SELL:
+            order_dict["buyerRealName"] = result_data.get("buyerRealName")
+
+        result.append(order_dict)
 
     return result
-
-
 
 
 
@@ -673,44 +687,44 @@ async def get_pending_buy_order_details(client: P2P):
     return await get_order_details_generic(client, orders_list)
 
 
-async def verify_transfer(client: P2P):
-    # Fetch the details
-    status_sell = await get_pending_sell_order_details(client=client)
-    status_buy = await get_pending_buy_order_details(client=client)
+async def verify_transfer(client: P2P) -> None:
 
-    print("Status sell:", status_sell)
-    print("Status buy:", status_buy)
+    sell_orders = await get_pending_sell_order_details(client=client)
+    buy_orders = await get_pending_buy_order_details(client=client)
 
-    # Handle Sell Orders
-    if not status_sell:
-        print("No sell transfer at this moment")
-    else:
-        # Loop through ALL sell orders
-        for order in status_sell:
-            # Safety check: ensure we didn't get an error packet from the previous function
-            if "error" in order:
-                send_telegram_message(f"{alert.get("skip_sell")} {order.get('orderId')}")
-                continue
+    print("Status sell:", sell_orders)  # Remove before production
+    print("Status buy:", buy_orders)
 
-            status_s = order.get('status')
-            if status_s:
-                print(f"Sell Order {order.get('orderId')} status: {status_s}")
+    _process_orders(sell_orders, order_type="sell")
+    _process_orders(buy_orders, order_type="buy")
 
-    # Handle Buy Orders
-    if not status_buy:
-        print("No buy transfer at this moment")
-    else:
-        # Loop through ALL buy orders
-        for order in status_buy:
-            if "error" in order:
-                send_telegram_message(f"{alert.get("skip_buy")} {order.get('orderId')}")
-                continue
 
-            status_b = order.get('status')
-            if status_b:
-                print(f"Buy Order {order.get('orderId')} status: {status_b}")
+def _process_orders(orders: list, order_type: str) -> None:
 
-    return []
+    if not orders:
+        print(f"No {order_type} transfer at this moment")
+        return
+
+    counterparty_name = "buyerRealName" if order_type == "sell" else "sellerRealName"
+
+    for order in orders:
+        if "error" in order:
+            order_id = order.get('orderId', 'unknown')
+            send_telegram_message(f"⚠️ATTENTION⚠️ Skipping transfer to {counterparty_name} / {order_id} due to fetch error.")
+            print(f"Skipping {order_type} order {order_id} due to fetch error.")
+            continue
+
+        order_id = order.get('orderId')
+        status = order.get('status')
+        counterparty_name = order.get(counterparty_name)
+        payment_type = order.get('paymentType')
+        create_date = order.get('createDate')
+        quantity = order.get('quantity')
+
+        if status:
+            print(f"{order_type.capitalize()} Order {order_id} status: {status}")
+            print(f"{counterparty_name}, "
+                  f"Payment: {payment_type}, Created: {create_date}, Quantity: {quantity}")
 
 
 #TODO: Think about alternating payment accounts every two month.
