@@ -688,46 +688,6 @@ async def get_pending_buy_order_details(client: P2P):
     return await get_order_details_generic(client, orders_list)
 
 
-# async def verify_transfer(client: P2P) -> None:
-#
-#     sell_orders = await get_pending_sell_order_details(client=client)
-#     buy_orders = await get_pending_buy_order_details(client=client)
-#
-#     print("Status sell:", sell_orders)  # Remove before production
-#     print("Status buy:", buy_orders)
-#
-#     _process_orders(sell_orders, order_type=OrderSide.SELL)
-#     _process_orders(buy_orders, order_type=OrderSide.BUY)
-#
-#
-# def _process_orders(orders: list, order_type: int) -> None:
-#
-#     if not orders:
-#         print(f"No {order_type} transfer at this moment")
-#         return
-#
-#     counterparty = "buyerRealName" if order_type == OrderSide.SELL else "sellerRealName"
-#
-#     for order in orders:
-#         if "error" in order:
-#             order_id = order.get('orderId', 'unknown')
-#             send_telegram_message(f"⚠️ATTENTION⚠️ Skipping transfer to {counterparty} / {order_id} due to fetch error.")
-#             print(f"Skipping {order_type} order {order_id} due to fetch error.")
-#             continue
-#
-#         order_id = order.get('orderId')
-#         status = order.get('status')
-#         counterparty_name = order.get(counterparty)
-#         payment_type = order.get('paymentType')
-#         create_date = order.get('createDate')
-#         amount = order.get('amount')
-#
-#         if status:
-#             print(f"{order_type} Order {order_id} status: {status}")
-#             print(f"{counterparty_name}, "
-#                   f"Payment: {payment_type}, Created: {create_date}, Amount: {amount}")
-
-
 async def verify_transfer(client: P2P, wise_client, profile_id: str, currency: str = "USD") -> None:
     """
     Verify transfers between Wise and ByBit orders.
@@ -913,6 +873,69 @@ async def main():
         api_secret=os.getenv("API_SECRET"),
     )
 
+
+    print("Current balance in USDT:",
+        await get_bybit_balance(client=api)
+          )
+
+
+    print("Wise buy ad details:",
+          await fetch_wise_buy_ad_details(client=api)
+          )
+
+    print("Wise sell ad details:",
+          await fetch_wise_sell_ad_details(client=api)
+          )
+
+    print("Fetch last 20 Pending sell orders:",
+          await fetch_pending_sell_orders(client=api)
+          )
+
+    print("Fetch last 20 Pending buy orders:",
+          await fetch_pending_buy_orders(client=api)
+          )
+
+    print("Chat message:",
+          await get_chat_message(client=api)
+          )
+
+    # print("Message sent:",
+    #       await send_chat_message(client=api)
+    #       )
+
+    """NEED to fix this!"""
+    print("Sell order Info:",
+          await get_pending_sell_order_details(client=api)
+          )
+
+    print("Buy order Info:",
+          await get_pending_buy_order_details(client=api)
+          )
+
+
+    """NEED to fix this!"""
+
+    print("Test order details", await api.get_order_details(
+        # orderId="1993151227714883584"
+        orderId = "2002879935441309696"
+    ))
+
+    # 8. Get Pending Orders
+    print("Pending orders:", await api.get_pending_orders(
+        side=0,
+        page=1,
+        size=10,
+    )
+          )
+
+    # 9. Get counterparty info
+    print("get info:", await api.get_counterparty_info(
+        originalUid="177871751",
+        orderId="1992070819939557376"
+    ))
+
+
+
     async with httpx.AsyncClient(headers=headers, timeout=30) as wise_client:
 
         profiles = await get_profiles(wise_client)
@@ -953,110 +976,5 @@ async def main():
                 raise
             await asyncio.sleep(30)
 
-#TODO: Think about alternating payment accounts every two month.
-# async def main():
-#     api = P2P(
-#         testnet=False,
-#         api_key=os.getenv("API_KEY"),
-#         api_secret=os.getenv("API_SECRET"),
-#     )
-#
-#
-#
-#     print("Current balance in USDT:",
-#         await get_bybit_balance(client=api)
-#           )
-#
-#
-#     print("Wise buy ad details:",
-#           await fetch_wise_buy_ad_details(client=api)
-#           )
-#
-#     print("Wise sell ad details:",
-#           await fetch_wise_sell_ad_details(client=api)
-#           )
-#
-#     print("Fetch last 20 Pending sell orders:",
-#           await fetch_pending_sell_orders(client=api)
-#           )
-#
-#     print("Fetch last 20 Pending buy orders:",
-#           await fetch_pending_buy_orders(client=api)
-#           )
-#
-#     print("Chat message:",
-#           await get_chat_message(client=api)
-#           )
-#
-#     # print("Message sent:",
-#     #       await send_chat_message(client=api)
-#     #       )
-#
-#     """NEED to fix this!"""
-#     print("Sell order Info:",
-#           await get_pending_sell_order_details(client=api)
-#           )
-#
-#     print("Buy order Info:",
-#           await get_pending_buy_order_details(client=api)
-#           )
-#
-#
-#     """NEED to fix this!"""
-#
-#     print("Test order details", await api.get_order_details(
-#         # orderId="1993151227714883584"
-#         orderId = "2002879935441309696"
-#     ))
-#
-#     # 8. Get Pending Orders
-#     print("Pending orders:", await api.get_pending_orders(
-#         side=0,
-#         page=1,
-#         size=10,
-#     )
-#           )
-#
-#     # 9. Get counterparty info
-#     print("get info:", await api.get_counterparty_info(
-#         originalUid="177871751",
-#         orderId="1992070819939557376"
-#     ))
-#
-#
-#
-#     async with httpx.AsyncClient(headers=headers, timeout=30) as client:
-#
-#         profiles = await get_profiles(client)
-#
-#         business_profile = None
-#         for p in profiles:
-#             print(f"Profile: {p['id']} | type={p['type']} | name={p.get('fullName')}")
-#             if p["type"] == "BUSINESS":
-#                 business_profile = p
-#                 break
-#
-#         if not business_profile:
-#             print("❌ No business profile found")
-#             send_telegram_message(alert.get("wise_profiles"))
-#             raise
-#
-#         profile_id = business_profile["id"]
-#         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
-#         print("🔁 Starting continuous Wise balance & incoming transfer tracking every 30 seconds...\n")
-#
-#         while True:
-#             try:
-#                 current_wise_usd = await get_wise_balance_value(client, profile_id, "USD")
-#                 await ad_management(api, current_wise_usd)
-#
-#                 await display_balance_and_transactions(client, profile_id, "USD")
-#
-#                 await verify_transfer(client=api)
-#
-#             except Exception as e:
-#                 send_telegram_message(f'{alert.get("loop_error")}, {e})')
-#                 raise
-#             await asyncio.sleep(30)
-#
-# asyncio.run(main())
+
+asyncio.run(main())
