@@ -241,8 +241,12 @@ AD_ONLINE = 10
 DEFAULT_TOKEN_ID = "USDT"
 DEFAULT_CURRENCY_ID = "USD"
 DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs # Check what it's for
-#TODO: Add remark
-REMARK = "PASS"
+REMARK = ("✅WISE TO WISE ONLY✅\n"
+          "💼Payment will be processed via my sole-owned company, IP ZHUCHENKO, LLC\n"
+          "⛔- No 3rd party payment accepted\n"
+          "✅️Corporate transfers are accepted but subject to verification\n"
+          "⚠️If the payment is Pending you must cancel the transfer and the order immediately\n"
+          "⚡️🚀Instant release🚀⚡️")
 USED_INCOMING_TRANSFERS = {}
 USED_OUTGOING_TRANSFERS = {}
 
@@ -314,7 +318,7 @@ def build_ad_payload(
     price: float,
     min_amount: int,
     max_amount: int,
-    remark: REMARK,
+    remark: str = REMARK,
     action_type: ActionType,
     quantity: str,
     payment_period: str = "15",
@@ -770,7 +774,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
 
         # Only verify if status is PAID (20)
         if status != OrderStatus.PAID:
-            print(f"   ⏳ Order not marked as PAID yet (status: {status}). Skipping verification.")
+            print(f"   ⏳ Order {order_id} not marked as PAID yet (status: {status}). Skipping verification.")
             continue
 
         # Search for matching transfer in Wise incoming transfers
@@ -868,7 +872,7 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
 
         # Only verify if status is PAID (20)
         if status != OrderStatus.PAID:
-            print(f"   ⏳ Order not marked as PAID yet (status: {status}). Skipping verification.")
+            print(f"   ⏳ Order {order_id} not marked as PAID yet (status: {status}). Skipping verification.")
             continue
 
         # Search for matching transfer in Wise outgoing transfers
