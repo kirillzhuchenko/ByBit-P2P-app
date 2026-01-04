@@ -243,6 +243,8 @@ DEFAULT_CURRENCY_ID = "USD"
 DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs # Check what it's for
 #TODO: Add remark
 REMARK = "PASS"
+USED_INCOMING_TRANSFERS = {}
+USED_OUTGOING_TRANSFERS = {}
 
 DEFAULT_TRADING_PREFERENCES = {
     "hasUnPostAd": 0,
@@ -692,6 +694,7 @@ async def verify_transfer(client: P2P, wise_client, profile_id: str, currency: s
     """
     Verify transfers between Wise and ByBit orders.
     Only processes orders with status 20 (PAID).
+    Tracks which transfers have been used to prevent double-matching.
     """
 
     # Fetch all necessary data
@@ -737,6 +740,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
     """
     Process SELL orders - verify incoming Wise payments from buyers.
     Only verifies orders with status 20 (PAID).
+    Prevents duplicate matching by tracking used transfers persistently.
     """
 
     if not sell_orders:
@@ -772,6 +776,12 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
         # Search for matching transfer in Wise incoming transfers
         matching_transfer = None
         for transfer in incoming_transfers:
+            transfer_ref = transfer['reference']
+
+            # Skip if this transfer was already matched to another order
+            if transfer_ref in USED_INCOMING_TRANSFERS:
+                continue
+
             transfer_amount = float(transfer['amount'])
             transfer_name = transfer['name']
 
@@ -781,6 +791,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
 
             if amount_match and name_match:
                 matching_transfer = transfer
+                USED_INCOMING_TRANSFERS[transfer_ref] = order_id  # Mark permanently as used
                 break
 
         if matching_transfer:
@@ -793,24 +804,49 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise transfer found")
             print(f"      Expected: ${amount} from {buyer_name}")
-            send_telegram_message(
-                f"⚠️ SELL Order {order_id} marked PAID but no Wise transfer found!\n"
-                f"Expected: ${amount} from {buyer_name}"
-            )
+
+            # Check if there are any transfers with matching amount but already used
+            potential_duplicates = []
+            for t in incoming_transfers:
+                if abs(float(t['amount']) - amount) < 0.01 and t['reference'] in USED_INCOMING_TRANSFERS:
+                    used_by_order = USED_INCOMING_TRANSFERS[t['reference']]
+                    potential_duplicates.append((t, used_by_order))
+
+            if potential_duplicates:
+                print(f"   ⚠️ WARNING: Found transfer(s) with matching amount but already matched to other orders")
+                for dup_transfer, used_by in potential_duplicates:
+                    print(f"      Transfer {dup_transfer['reference']} already used by order {used_by}")
+                print(f"      This could be a duplicate fraudulent order!")
+                send_telegram_message(
+                    f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
+                    f"SELL Order {order_id} marked PAID\n"
+                    f"Amount: ${amount} | Buyer: {buyer_name}\n"
+                    f"Matching Wise transfer already used for order {potential_duplicates[0][1]}!\n"
+                    f"Possible duplicate order scam attempt."
+                )
+            else:
+                send_telegram_message(
+                    f"⚠️ SELL Order {order_id} marked PAID but no Wise transfer found!\n"
+                    f"Expected: ${amount} from {buyer_name}"
+                )
 
 
 def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
     """
     Process BUY orders - verify outgoing Wise payments to sellers.
     Only verifies orders with status 20 (PAID).
+    Prevents duplicate matching by tracking used transfers.
     """
-
+#TODO: Consider adding USED_OUTGOING_TRANSFERS = {} to validate BUY orders. Doesn't work with Wise USD transfer. Can be used to automatically mark order as PAID after verification.
     if not buy_orders:
         print("\n📊 No pending BUY orders to verify")
         return
 
     print("\n🔍 VERIFYING BUY ORDERS (Outgoing Wise Payments)")
     print("-" * 60)
+
+    # Track which transfer references have been used
+    used_transfer_refs = set()
 
     for order in buy_orders:
         if "error" in order:
@@ -838,6 +874,12 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
         # Search for matching transfer in Wise outgoing transfers
         matching_transfer = None
         for transfer in outgoing_transfers:
+            transfer_ref = transfer['reference']
+
+            # Skip if this transfer was already matched to another order
+            if transfer_ref in used_transfer_refs:
+                continue
+
             transfer_amount = abs(float(transfer['amount']))  # Outgoing amounts are negative
             transfer_name = transfer['name']
 
@@ -847,6 +889,7 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
 
             if amount_match and name_match:
                 matching_transfer = transfer
+                used_transfer_refs.add(transfer_ref)  # Mark this transfer as used
                 break
 
         if matching_transfer:
@@ -859,11 +902,29 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise payment found")
             print(f"      Expected: ${amount} to {seller_name}")
-            send_telegram_message(
-                f"⚠️ BUY Order {order_id} marked PAID but no Wise payment found!\n"
-                f"Expected: ${amount} to {seller_name}"
-            )
 
+            # Check if there are any transfers with matching amount but already used
+            potential_duplicates = [
+                t for t in outgoing_transfers
+                if abs(abs(float(t['amount'])) - amount) < 0.01
+                   and t['reference'] in used_transfer_refs
+            ]
+
+            if potential_duplicates:
+                print(f"   ⚠️ WARNING: Found transfer(s) with matching amount but already matched to other orders")
+                print(f"      This could be a duplicate fraudulent order!")
+                send_telegram_message(
+                    f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
+                    f"BUY Order {order_id} marked PAID\n"
+                    f"Amount: ${amount} | Seller: {seller_name}\n"
+                    f"Matching Wise payment already used for another order!\n"
+                    f"Possible duplicate order scam attempt."
+                )
+            else:
+                send_telegram_message(
+                    f"⚠️ BUY Order {order_id} marked PAID but no Wise payment found!\n"
+                    f"Expected: ${amount} to {seller_name}"
+                )
 
 # Update the main loop to pass wise_client and profile_id
 async def main():
