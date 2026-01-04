@@ -161,10 +161,12 @@ async def display_balance_and_transactions(wise_client, profile_id, currency="US
             break
 
     if not account:
+        """Send tegram alert"""
         print(f"❌ No {currency} balance found.")
         return
 
     incoming_today = await get_incoming_transfers_csv(wise_client, profile_id, account["id"], currency)
+    outgoing_today = await get_outgoing_transfers_csv(wise_client, profile_id, account["id"], currency)
 
     if incoming_today:
         print("📥 Incoming transfers today:")
@@ -172,8 +174,6 @@ async def display_balance_and_transactions(wise_client, profile_id, currency="US
             print(f"   + {tx['amount']} {currency} | {tx['name']} | Ref: {tx['reference']} | {tx['time']}")
     else:
         print("⚠️ No incoming transfers today.")
-
-    outgoing_today = await get_outgoing_transfers_csv(wise_client, profile_id, account["id"], currency)
 
     if outgoing_today:
         print("📥 Outgoing transfers today:")
@@ -653,7 +653,7 @@ async def get_order_details_generic(client: P2P, orders_list: list):
             "paymentType": result_data.get("paymentType"),
             "status": result_data.get("status"),
             "createDate": result_data.get("createDate"),
-            "quantity": result_data.get("quantity"),
+            "amount": result_data.get("amount"),
         }
 
         if side == OrderSide.BUY:
@@ -688,47 +688,224 @@ async def get_pending_buy_order_details(client: P2P):
     return await get_order_details_generic(client, orders_list)
 
 
-async def verify_transfer(client: P2P) -> None:
+# async def verify_transfer(client: P2P) -> None:
+#
+#     sell_orders = await get_pending_sell_order_details(client=client)
+#     buy_orders = await get_pending_buy_order_details(client=client)
+#
+#     print("Status sell:", sell_orders)  # Remove before production
+#     print("Status buy:", buy_orders)
+#
+#     _process_orders(sell_orders, order_type=OrderSide.SELL)
+#     _process_orders(buy_orders, order_type=OrderSide.BUY)
+#
+#
+# def _process_orders(orders: list, order_type: int) -> None:
+#
+#     if not orders:
+#         print(f"No {order_type} transfer at this moment")
+#         return
+#
+#     counterparty = "buyerRealName" if order_type == OrderSide.SELL else "sellerRealName"
+#
+#     for order in orders:
+#         if "error" in order:
+#             order_id = order.get('orderId', 'unknown')
+#             send_telegram_message(f"⚠️ATTENTION⚠️ Skipping transfer to {counterparty} / {order_id} due to fetch error.")
+#             print(f"Skipping {order_type} order {order_id} due to fetch error.")
+#             continue
+#
+#         order_id = order.get('orderId')
+#         status = order.get('status')
+#         counterparty_name = order.get(counterparty)
+#         payment_type = order.get('paymentType')
+#         create_date = order.get('createDate')
+#         amount = order.get('amount')
+#
+#         if status:
+#             print(f"{order_type} Order {order_id} status: {status}")
+#             print(f"{counterparty_name}, "
+#                   f"Payment: {payment_type}, Created: {create_date}, Amount: {amount}")
 
+
+async def verify_transfer(client: P2P, wise_client, profile_id: str, currency: str = "USD") -> None:
+    """
+    Verify transfers between Wise and ByBit orders.
+    Only processes orders with status 20 (PAID).
+    """
+
+    # Fetch all necessary data
     sell_orders = await get_pending_sell_order_details(client=client)
     buy_orders = await get_pending_buy_order_details(client=client)
 
-    print("Status sell:", sell_orders)  # Remove before production
-    print("Status buy:", buy_orders)
+    # Get Wise balance and account ID for transfers
+    balances = await get_wise_balances(wise_client, profile_id)
+    account = None
+    for b in balances:
+        if b["currency"] == currency:
+            account = b
+            break
 
-    _process_orders(sell_orders, order_type=OrderSide.SELL)
-    _process_orders(buy_orders, order_type=OrderSide.BUY)
-
-
-def _process_orders(orders: list, order_type: int) -> None:
-
-    if not orders:
-        print(f"No {order_type} transfer at this moment")
+    if not account:
+        print(f"❌ No {currency} balance found on Wise")
         return
 
-    counterparty = "buyerRealName" if order_type == OrderSide.SELL else "sellerRealName"
+    # Fetch incoming and outgoing transfers from Wise
+    incoming_transfers = await get_incoming_transfers_csv(
+        wise_client, profile_id, account["id"], currency
+    )
+    outgoing_transfers = await get_outgoing_transfers_csv(
+        wise_client, profile_id, account["id"], currency
+    )
 
-    for order in orders:
+    print("\n" + "=" * 60)
+    print("TRANSFER VERIFICATION STARTING")
+    print("=" * 60)
+
+    # Process SELL orders (we expect incoming payments to Wise)
+    _process_sell_orders(sell_orders, incoming_transfers)
+
+    # Process BUY orders (we expect outgoing payments from Wise)
+    _process_buy_orders(buy_orders, outgoing_transfers)
+
+    print("=" * 60)
+    print("TRANSFER VERIFICATION COMPLETE")
+    print("=" * 60 + "\n")
+
+
+def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
+    """
+    Process SELL orders - verify incoming Wise payments from buyers.
+    Only verifies orders with status 20 (PAID).
+    """
+
+    if not sell_orders:
+        print("📊 No pending SELL orders to verify")
+        return
+
+    print("\n🔍 VERIFYING SELL ORDERS (Incoming Wise Payments)")
+    print("-" * 60)
+
+    for order in sell_orders:
         if "error" in order:
             order_id = order.get('orderId', 'unknown')
-            send_telegram_message(f"⚠️ATTENTION⚠️ Skipping transfer to {counterparty} / {order_id} due to fetch error.")
-            print(f"Skipping {order_type} order {order_id} due to fetch error.")
+            send_telegram_message(f'{alert.get("skip_sell")}{order_id}')
+            print(f"⚠️ Skipping SELL order {order_id} due to fetch error")
             continue
 
         order_id = order.get('orderId')
         status = order.get('status')
-        counterparty_name = order.get(counterparty)
+        buyer_name = order.get('buyerRealName')
         payment_type = order.get('paymentType')
         create_date = order.get('createDate')
-        quantity = order.get('quantity')
+        amount = float(order.get('amount', 0))
 
-        if status:
-            print(f"{order_type.capitalize()} Order {order_id} status: {status}")
-            print(f"{counterparty_name}, "
-                  f"Payment: {payment_type}, Created: {create_date}, Quantity: {quantity}")
+        print(f"\n📋 Order ID: {order_id}")
+        print(f"   Status: {status} | Buyer: {buyer_name}")
+        print(f"   Payment Type: {payment_type} | Amount: ${amount}")
+
+        # Only verify if status is PAID (20)
+        if status != OrderStatus.PAID:
+            print(f"   ⏳ Order not marked as PAID yet (status: {status}). Skipping verification.")
+            continue
+
+        # Search for matching transfer in Wise incoming transfers
+        matching_transfer = None
+        for transfer in incoming_transfers:
+            transfer_amount = float(transfer['amount'])
+            transfer_name = transfer['name']
+
+            # Match by amount and name (with some tolerance for amount)
+            amount_match = abs(transfer_amount - amount) < 0.01
+            name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
+
+            if amount_match and name_match:
+                matching_transfer = transfer
+                break
+
+        if matching_transfer:
+            print(f"   ✅ VERIFIED: Transfer found on Wise")
+            print(f"      Wise Payer: {matching_transfer['name']}")
+            print(f"      Wise Amount: ${matching_transfer['amount']}")
+            print(f"      Wise Reference: {matching_transfer['reference']}")
+            print(f"      Wise Time: {matching_transfer['time']}")
+            print(f"   🚀 Ready to release crypto to buyer")
+        else:
+            print(f"   ❌ NO MATCH: No corresponding Wise transfer found")
+            print(f"      Expected: ${amount} from {buyer_name}")
+            send_telegram_message(
+                f"⚠️ SELL Order {order_id} marked PAID but no Wise transfer found!\n"
+                f"Expected: ${amount} from {buyer_name}"
+            )
 
 
-#TODO: Think about alternating payment accounts every two month.
+def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
+    """
+    Process BUY orders - verify outgoing Wise payments to sellers.
+    Only verifies orders with status 20 (PAID).
+    """
+
+    if not buy_orders:
+        print("\n📊 No pending BUY orders to verify")
+        return
+
+    print("\n🔍 VERIFYING BUY ORDERS (Outgoing Wise Payments)")
+    print("-" * 60)
+
+    for order in buy_orders:
+        if "error" in order:
+            order_id = order.get('orderId', 'unknown')
+            send_telegram_message(f'{alert.get("skip_buy")}{order_id}')
+            print(f"⚠️ Skipping BUY order {order_id} due to fetch error")
+            continue
+
+        order_id = order.get('orderId')
+        status = order.get('status')
+        seller_name = order.get('sellerRealName')
+        payment_type = order.get('paymentType')
+        create_date = order.get('createDate')
+        amount = float(order.get('amount', 0))
+
+        print(f"\n📋 Order ID: {order_id}")
+        print(f"   Status: {status} | Seller: {seller_name}")
+        print(f"   Payment Type: {payment_type} | Amount: ${amount}")
+
+        # Only verify if status is PAID (20)
+        if status != OrderStatus.PAID:
+            print(f"   ⏳ Order not marked as PAID yet (status: {status}). Skipping verification.")
+            continue
+
+        # Search for matching transfer in Wise outgoing transfers
+        matching_transfer = None
+        for transfer in outgoing_transfers:
+            transfer_amount = abs(float(transfer['amount']))  # Outgoing amounts are negative
+            transfer_name = transfer['name']
+
+            # Match by amount and name (with some tolerance for amount)
+            amount_match = abs(transfer_amount - amount) < 0.01
+            name_match = seller_name and seller_name.lower() in transfer_name.lower()
+
+            if amount_match and name_match:
+                matching_transfer = transfer
+                break
+
+        if matching_transfer:
+            print(f"   ✅ VERIFIED: Payment sent via Wise")
+            print(f"      Wise Payee: {matching_transfer['name']}")
+            print(f"      Wise Amount: ${abs(float(matching_transfer['amount']))}")
+            print(f"      Wise Reference: {matching_transfer['reference']}")
+            print(f"      Wise Time: {matching_transfer['time']}")
+            print(f"   ✓ Payment confirmed to seller")
+        else:
+            print(f"   ❌ NO MATCH: No corresponding Wise payment found")
+            print(f"      Expected: ${amount} to {seller_name}")
+            send_telegram_message(
+                f"⚠️ BUY Order {order_id} marked PAID but no Wise payment found!\n"
+                f"Expected: ${amount} to {seller_name}"
+            )
+
+
+# Update the main loop to pass wise_client and profile_id
 async def main():
     api = P2P(
         testnet=False,
@@ -736,107 +913,9 @@ async def main():
         api_secret=os.getenv("API_SECRET"),
     )
 
+    async with httpx.AsyncClient(headers=headers, timeout=30) as wise_client:
 
-
-    print("Current balance in USDT:",
-        await get_bybit_balance(client=api)
-          )
-
-
-    print("Wise buy ad details:",
-          await fetch_wise_buy_ad_details(client=api)
-          )
-
-    print("Wise sell ad details:",
-          await fetch_wise_sell_ad_details(client=api)
-          )
-
-
-
-
-    # TODO: Once marked as paid: paymentType == 78 AND timestamp (withing 30mins) AND Wise sender name == ByBit AND Wise sender amount == ByBit -> Release funds
-    # if paymentType =! 78 -> Telegram text msg
-    # if Wise Name =! ByBit -> Telegram text
-    # if Wise balance =! ByBit -> Telegram text. !!!! round up to 2 decimals. 111.118 -> 111.12, 111.113 -> 111.11
-    # if timestamp withing order creation -> proceed
-
-    # payment_type = await get_pending_sell_order_details(client=api) #get paymentType
-    # bybit_name = await fetch_pending_sell_orders(client=api) #get buyerRealName
-    # bybit_amount = await fetch_pending_sell_orders(client=api) #get amount
-    # #TODO: Think of adding timestamp tracking of a created sell order.
-    # payment_type = payment_type[0]["paymentType"]
-    # buyerRealName = bybit_name[0]["buyerRealName"]
-    # amount = bybit_amount[0]["amount"]
-    # if payment_type == 78:
-    #     # and buyerRealName == wiseBuyerName and amount == wiseBuyerTransfer
-    #     # await release_assets(client=api)
-    #     print("Ready to release")
-    #
-    # elif payment_type != 78:
-    #     print("Payment type not recognized")
-    #     #TODO: Send telegram msg
-    # # elif buyerRealName != wiseBuyerName:
-    # #     print("Buyer RealName not recognized")
-    # #     #TODO: Send Telegram msg
-    # # elif amount != wiseBuyerTransfer:
-    # #     print("Amount not recognized")
-    # #     #TODO: Send Telegram msg
-    # else:
-    #     print("Unknown issue")
-    #     #TODO: Send Telegram msg
-
-    print("Fetch last 20 Pending sell orders:",
-          await fetch_pending_sell_orders(client=api)
-          )
-
-    print("Fetch last 20 Pending buy orders:",
-          await fetch_pending_buy_orders(client=api)
-          )
-
-    print("Chat message:",
-          await get_chat_message(client=api)
-          )
-
-    # print("Message sent:",
-    #       await send_chat_message(client=api)
-    #       )
-
-    """NEED to fix this!"""
-    print("Sell order Info:",
-          await get_pending_sell_order_details(client=api)
-          )
-
-    print("Buy order Info:",
-          await get_pending_buy_order_details(client=api)
-          )
-
-
-    """NEED to fix this!"""
-
-    print("Test order details", await api.get_order_details(
-        # orderId="1993151227714883584"
-        orderId = "2002879935441309696"
-    ))
-
-    # 8. Get Pending Orders
-    print("Pending orders:", await api.get_pending_orders(
-        side=0,
-        page=1,
-        size=10,
-    )
-          )
-
-    # 9. Get counterparty info
-    print("get info:", await api.get_counterparty_info(
-        originalUid="177871751",
-        orderId="1992070819939557376"
-    ))
-
-
-
-    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
-
-        profiles = await get_profiles(client)
+        profiles = await get_profiles(wise_client)
 
         business_profile = None
         for p in profiles:
@@ -852,20 +931,132 @@ async def main():
 
         profile_id = business_profile["id"]
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
-        print("🔁 Starting continuous Wise balance & incoming transfer tracking every 30 seconds...\n")
+        print("🔁 Starting continuous verification loop...\n")
 
         while True:
             try:
-                current_wise_usd = await get_wise_balance_value(client, profile_id, "USD")
+                current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
                 await ad_management(api, current_wise_usd)
 
-                await display_balance_and_transactions(client, profile_id, "USD")
+                await display_balance_and_transactions(wise_client, profile_id, "USD")
 
-                await verify_transfer(client=api)
+                # Enhanced verification with Wise data
+                await verify_transfer(
+                    client=api,
+                    wise_client=wise_client,
+                    profile_id=profile_id,
+                    currency="USD"
+                )
 
             except Exception as e:
                 send_telegram_message(f'{alert.get("loop_error")}, {e})')
                 raise
             await asyncio.sleep(30)
 
-asyncio.run(main())
+#TODO: Think about alternating payment accounts every two month.
+# async def main():
+#     api = P2P(
+#         testnet=False,
+#         api_key=os.getenv("API_KEY"),
+#         api_secret=os.getenv("API_SECRET"),
+#     )
+#
+#
+#
+#     print("Current balance in USDT:",
+#         await get_bybit_balance(client=api)
+#           )
+#
+#
+#     print("Wise buy ad details:",
+#           await fetch_wise_buy_ad_details(client=api)
+#           )
+#
+#     print("Wise sell ad details:",
+#           await fetch_wise_sell_ad_details(client=api)
+#           )
+#
+#     print("Fetch last 20 Pending sell orders:",
+#           await fetch_pending_sell_orders(client=api)
+#           )
+#
+#     print("Fetch last 20 Pending buy orders:",
+#           await fetch_pending_buy_orders(client=api)
+#           )
+#
+#     print("Chat message:",
+#           await get_chat_message(client=api)
+#           )
+#
+#     # print("Message sent:",
+#     #       await send_chat_message(client=api)
+#     #       )
+#
+#     """NEED to fix this!"""
+#     print("Sell order Info:",
+#           await get_pending_sell_order_details(client=api)
+#           )
+#
+#     print("Buy order Info:",
+#           await get_pending_buy_order_details(client=api)
+#           )
+#
+#
+#     """NEED to fix this!"""
+#
+#     print("Test order details", await api.get_order_details(
+#         # orderId="1993151227714883584"
+#         orderId = "2002879935441309696"
+#     ))
+#
+#     # 8. Get Pending Orders
+#     print("Pending orders:", await api.get_pending_orders(
+#         side=0,
+#         page=1,
+#         size=10,
+#     )
+#           )
+#
+#     # 9. Get counterparty info
+#     print("get info:", await api.get_counterparty_info(
+#         originalUid="177871751",
+#         orderId="1992070819939557376"
+#     ))
+#
+#
+#
+#     async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+#
+#         profiles = await get_profiles(client)
+#
+#         business_profile = None
+#         for p in profiles:
+#             print(f"Profile: {p['id']} | type={p['type']} | name={p.get('fullName')}")
+#             if p["type"] == "BUSINESS":
+#                 business_profile = p
+#                 break
+#
+#         if not business_profile:
+#             print("❌ No business profile found")
+#             send_telegram_message(alert.get("wise_profiles"))
+#             raise
+#
+#         profile_id = business_profile["id"]
+#         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
+#         print("🔁 Starting continuous Wise balance & incoming transfer tracking every 30 seconds...\n")
+#
+#         while True:
+#             try:
+#                 current_wise_usd = await get_wise_balance_value(client, profile_id, "USD")
+#                 await ad_management(api, current_wise_usd)
+#
+#                 await display_balance_and_transactions(client, profile_id, "USD")
+#
+#                 await verify_transfer(client=api)
+#
+#             except Exception as e:
+#                 send_telegram_message(f'{alert.get("loop_error")}, {e})')
+#                 raise
+#             await asyncio.sleep(30)
+#
+# asyncio.run(main())
