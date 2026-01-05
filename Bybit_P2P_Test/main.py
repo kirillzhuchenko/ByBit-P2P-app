@@ -651,7 +651,7 @@ async def get_order_details_generic(client: P2P, orders_list: list):
 
         result_data = detail.get("result", {})
 
-        side = order.get("side")  # or result_data.get("side") depending on where it's stored
+        side = result_data.get("side")
 
         order_dict = {
             "orderId": order["orderId"],
