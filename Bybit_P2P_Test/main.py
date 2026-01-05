@@ -14,7 +14,7 @@ from enum import IntEnum, StrEnum
 from typing import TypedDict
 from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
-
+from database import Database, VerificationSource
 
 
 #=====================
@@ -224,18 +224,21 @@ class AdSide(IntEnum):
     BUY = 0
     SELL = 1
 
-class OrderSide(IntEnum):
-    BUY = 0
-    SELL = 1
-
 class ActionType(StrEnum):
     MODIFY = "MODIFY"
     ACTIVATE = "ACTIVE"
+
+class OrderSide(IntEnum):
+    BUY = 0
+    SELL = 1
 
 class OrderStatus(IntEnum):
     PENDING = 10
     PAID = 20
     APPEAL = 30
+
+class PaymentType(IntEnum):
+    WISE = 78
 
 AD_ONLINE = 10
 DEFAULT_TOKEN_ID = "USDT"
@@ -247,8 +250,6 @@ REMARK = ("✅WISE TO WISE ONLY✅\n"
           "✅️Corporate transfers are accepted but subject to verification\n"
           "⚠️If the payment is Pending you must cancel the transfer and the order immediately\n"
           "⚡️🚀Instant release🚀⚡️")
-USED_INCOMING_TRANSFERS = {}
-USED_OUTGOING_TRANSFERS = {}
 
 DEFAULT_TRADING_PREFERENCES = {
     "hasUnPostAd": 0,
@@ -424,13 +425,11 @@ async def ad_management(client: P2P, wise_balance: float):
     MIN_THRESHOLD = 500
     MIN_WISE_BALANCE = 500
 
-    # Calculate locked liquidity for BUY orders
     locked_funds = 0.0
     if pending_buys:
         for order in pending_buys:
             locked_funds += float(order.get("amount", 0))
 
-    # Calculate effective liquidity for BUY orders
     effective_balance = wise_balance - locked_funds - MIN_WISE_BALANCE
     """Remove the line below. It's good for illustration only"""
     print(f"🏦 Wise: ${wise_balance} | 🔒 Locked in Orders: ${locked_funds} | 🟢 Effective: ${effective_balance}")
@@ -694,11 +693,11 @@ async def get_pending_buy_order_details(client: P2P):
     return await get_order_details_generic(client, orders_list)
 
 
-async def verify_transfer(client: P2P, wise_client, profile_id: str, currency: str = "USD") -> None:
+async def verify_transfer(client: P2P, wise_client, profile_id: str, db: Database, currency: str = "USD") -> None:
     """
     Verify transfers between Wise and ByBit orders.
     Only processes orders with status 20 (PAID).
-    Tracks which transfers have been used to prevent double-matching.
+    Uses database to track matched transfers and prevent double-matching.
     """
 
     # Fetch all necessary data
@@ -730,21 +729,21 @@ async def verify_transfer(client: P2P, wise_client, profile_id: str, currency: s
     print("=" * 60)
 
     # Process SELL orders (we expect incoming payments to Wise)
-    _process_sell_orders(sell_orders, incoming_transfers)
+    _process_sell_orders(sell_orders, incoming_transfers, db)
 
     # Process BUY orders (we expect outgoing payments from Wise)
-    _process_buy_orders(buy_orders, outgoing_transfers)
+    _process_buy_orders(buy_orders, outgoing_transfers, db)
 
     print("=" * 60)
     print("TRANSFER VERIFICATION COMPLETE")
     print("=" * 60 + "\n")
 
 
-def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
+def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Database) -> None:
     """
     Process SELL orders - verify incoming Wise payments from buyers.
     Only verifies orders with status 20 (PAID).
-    Prevents duplicate matching by tracking used transfers persistently.
+    Uses database to prevent duplicate matching persistently.
     """
 
     if not sell_orders:
@@ -772,6 +771,11 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
         print(f"   Status: {status} | Buyer: {buyer_name}")
         print(f"   Payment Type: {payment_type} | Amount: ${amount}")
 
+        # Check if order already matched in database
+        if db.is_order_matched(order_id):
+            print(f"   ✅ Order already matched in database (skipping)")
+            continue
+
         # Only verify if status is PAID (20)
         if status != OrderStatus.PAID:
             print(f"   ⏳ Order {order_id} not marked as PAID yet (status: {status}). Skipping verification.")
@@ -780,23 +784,23 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
         # Search for matching transfer in Wise incoming transfers
         matching_transfer = None
         for transfer in incoming_transfers:
-            transfer_ref = transfer['reference']
+            if payment_type == PaymentType.WISE:
+                transfer_ref = transfer['reference']
 
-            # Skip if this transfer was already matched to another order
-            if transfer_ref in USED_INCOMING_TRANSFERS:
-                continue
+                # Check database if this transfer was already used
+                if db.is_transfer_used(transfer_ref):
+                    continue
 
-            transfer_amount = float(transfer['amount'])
-            transfer_name = transfer['name']
+                transfer_amount = float(transfer['amount'])
+                transfer_name = transfer['name']
 
-            # Match by amount and name (with some tolerance for amount)
-            amount_match = abs(transfer_amount - amount) < 0.01
-            name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
+                # Match by amount and name (with some tolerance for amount)
+                amount_match = abs(transfer_amount - amount) < 0.01
+                name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
 
-            if amount_match and name_match:
-                matching_transfer = transfer
-                USED_INCOMING_TRANSFERS[transfer_ref] = order_id  # Mark permanently as used
-                break
+                if amount_match and name_match:
+                    matching_transfer = transfer
+                    break
 
         if matching_transfer:
             print(f"   ✅ VERIFIED: Transfer found on Wise")
@@ -804,7 +808,24 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
             print(f"      Wise Amount: ${matching_transfer['amount']}")
             print(f"      Wise Reference: {matching_transfer['reference']}")
             print(f"      Wise Time: {matching_transfer['time']}")
-            print(f"   🚀 Ready to release crypto to buyer")
+
+            # Save match to database
+            try:
+                match_id = db.add_match(
+                    order_id=order_id,
+                    order_side=OrderSide.SELL,
+                    order_amount=amount,
+                    counterparty_name=buyer_name,
+                    wise_transfer_reference=matching_transfer['reference'],
+                    wise_amount=float(matching_transfer['amount']),
+                    wise_direction="CREDIT",
+                    verification_source=VerificationSource.WISE_INCOMING
+                )
+                print(f"      💾 Match saved to database (ID: {match_id})")
+                print(f"   🚀 Ready to release crypto to buyer")
+            except Exception as e:
+                print(f"      ⚠️ Failed to save match to database: {e}")
+                send_telegram_message(f"⚠️ Failed to save match for order {order_id}: {e}")
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise transfer found")
             print(f"      Expected: ${amount} from {buyer_name}")
@@ -812,9 +833,12 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
             # Check if there are any transfers with matching amount but already used
             potential_duplicates = []
             for t in incoming_transfers:
-                if abs(float(t['amount']) - amount) < 0.01 and t['reference'] in USED_INCOMING_TRANSFERS:
-                    used_by_order = USED_INCOMING_TRANSFERS[t['reference']]
-                    potential_duplicates.append((t, used_by_order))
+                if abs(float(t['amount']) - amount) < 0.01 and db.is_transfer_used(t['reference']):
+                    # Get the order this was matched to
+                    existing_match = db.get_match_by_wise_reference(t['reference'])
+                    if existing_match:
+                        used_by_order = existing_match['order_id']
+                        potential_duplicates.append((t, used_by_order))
 
             if potential_duplicates:
                 print(f"   ⚠️ WARNING: Found transfer(s) with matching amount but already matched to other orders")
@@ -835,22 +859,19 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list) -> None:
                 )
 
 
-def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
+def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database) -> None:
     """
     Process BUY orders - verify outgoing Wise payments to sellers.
     Only verifies orders with status 20 (PAID).
-    Prevents duplicate matching by tracking used transfers.
+    Uses database to prevent duplicate matching.
     """
-#TODO: Consider adding USED_OUTGOING_TRANSFERS = {} to validate BUY orders. Doesn't work with Wise USD transfer. Can be used to automatically mark order as PAID after verification.
+
     if not buy_orders:
         print("\n📊 No pending BUY orders to verify")
         return
 
     print("\n🔍 VERIFYING BUY ORDERS (Outgoing Wise Payments)")
     print("-" * 60)
-
-    # Track which transfer references have been used
-    used_transfer_refs = set()
 
     for order in buy_orders:
         if "error" in order:
@@ -870,6 +891,11 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
         print(f"   Status: {status} | Seller: {seller_name}")
         print(f"   Payment Type: {payment_type} | Amount: ${amount}")
 
+        # Check if order already matched in database
+        if db.is_order_matched(order_id):
+            print(f"   ✅ Order already matched in database (skipping)")
+            continue
+
         # Only verify if status is PAID (20)
         if status != OrderStatus.PAID:
             print(f"   ⏳ Order {order_id} not marked as PAID yet (status: {status}). Skipping verification.")
@@ -878,23 +904,23 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
         # Search for matching transfer in Wise outgoing transfers
         matching_transfer = None
         for transfer in outgoing_transfers:
-            transfer_ref = transfer['reference']
+            if payment_type == PaymentType.WISE:
+                transfer_ref = transfer['reference']
 
-            # Skip if this transfer was already matched to another order
-            if transfer_ref in used_transfer_refs:
-                continue
+                # Check database if this transfer was already used
+                if db.is_transfer_used(transfer_ref):
+                    continue
 
-            transfer_amount = abs(float(transfer['amount']))  # Outgoing amounts are negative
-            transfer_name = transfer['name']
+                transfer_amount = abs(float(transfer['amount']))  # Outgoing amounts are negative
+                transfer_name = transfer['name']
 
-            # Match by amount and name (with some tolerance for amount)
-            amount_match = abs(transfer_amount - amount) < 0.01
-            name_match = seller_name and seller_name.lower() in transfer_name.lower()
+                # Match by amount and name (with some tolerance for amount)
+                amount_match = abs(transfer_amount - amount) < 0.01
+                name_match = seller_name and seller_name.lower() in transfer_name.lower()
 
-            if amount_match and name_match:
-                matching_transfer = transfer
-                used_transfer_refs.add(transfer_ref)  # Mark this transfer as used
-                break
+                if amount_match and name_match:
+                    matching_transfer = transfer
+                    break
 
         if matching_transfer:
             print(f"   ✅ VERIFIED: Payment sent via Wise")
@@ -902,17 +928,36 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
             print(f"      Wise Amount: ${abs(float(matching_transfer['amount']))}")
             print(f"      Wise Reference: {matching_transfer['reference']}")
             print(f"      Wise Time: {matching_transfer['time']}")
-            print(f"   ✓ Payment confirmed to seller")
+
+            # Save match to database
+            try:
+                match_id = db.add_match(
+                    order_id=order_id,
+                    order_side=OrderSide.BUY,
+                    order_amount=amount,
+                    counterparty_name=seller_name,
+                    wise_transfer_reference=matching_transfer['reference'],
+                    wise_amount=abs(float(matching_transfer['amount'])),
+                    wise_direction="DEBIT",
+                    verification_source=VerificationSource.WISE_OUTGOING
+                )
+                print(f"      💾 Match saved to database (ID: {match_id})")
+                print(f"   ✓ Payment confirmed to seller")
+            except Exception as e:
+                print(f"      ⚠️ Failed to save match to database: {e}")
+                send_telegram_message(f"⚠️ Failed to save match for order {order_id}: {e}")
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise payment found")
             print(f"      Expected: ${amount} to {seller_name}")
 
             # Check if there are any transfers with matching amount but already used
-            potential_duplicates = [
-                t for t in outgoing_transfers
-                if abs(abs(float(t['amount'])) - amount) < 0.01
-                   and t['reference'] in used_transfer_refs
-            ]
+            potential_duplicates = []
+            for t in outgoing_transfers:
+                if abs(abs(float(t['amount'])) - amount) < 0.01 and db.is_transfer_used(t['reference']):
+                    existing_match = db.get_match_by_wise_reference(t['reference'])
+                    if existing_match:
+                        used_by_order = existing_match['order_id']
+                        potential_duplicates.append((t, used_by_order))
 
             if potential_duplicates:
                 print(f"   ⚠️ WARNING: Found transfer(s) with matching amount but already matched to other orders")
@@ -930,7 +975,8 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list) -> None:
                     f"Expected: ${amount} to {seller_name}"
                 )
 
-# Update the main loop to pass wise_client and profile_id
+
+# Update the main loop to include database
 async def main():
     api = P2P(
         testnet=False,
@@ -938,6 +984,9 @@ async def main():
         api_secret=os.getenv("API_SECRET"),
     )
 
+    # Initialize database
+    db = Database()
+    print("✅ Database initialized")
 
     print("Current balance in USDT:",
         await get_bybit_balance(client=api)
@@ -1028,13 +1077,19 @@ async def main():
 
                 await display_balance_and_transactions(wise_client, profile_id, "USD")
 
-                # Enhanced verification with Wise data
+                # Enhanced verification with Wise data and database
                 await verify_transfer(
                     client=api,
                     wise_client=wise_client,
                     profile_id=profile_id,
+                    db=db,
                     currency="USD"
                 )
+
+                # Display database statistics periodically
+                stats = db.get_statistics()
+                print(f"\n📊 Database Stats: {stats['total_matches']} matches | "
+                      f"Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
 
             except Exception as e:
                 send_telegram_message(f'{alert.get("loop_error")}, {e})')
