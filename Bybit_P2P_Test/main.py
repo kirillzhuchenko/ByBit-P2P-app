@@ -15,6 +15,7 @@ from typing import TypedDict
 from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
 from database import Database, VerificationSource
+from names import names_match
 
 
 #=====================
@@ -80,6 +81,30 @@ async def get_wise_balance_value(wise_client, profile_id, currency="USD") -> flo
         if b["currency"] == currency:
             return float(b["amount"]["value"])
     return 0.0
+
+#TODO: Think of randomly choosing account to pay to. Note: Need to open multiple business accounts. 6 should be enough (hopefully)
+"""choose_account() wights balances and randomly chooses where to pay to, the one with lowest funds will get higher priority."""
+
+# import random
+# import math
+#
+# EPSILON = 1e-6
+# TAU = 200
+#
+# def choose_account(balances):
+#     avg = sum(balances.values()) / len(balances)
+#
+#     weights = {}
+#     for acc, balance in balances.items():
+#         x = (avg - balance) / TAU
+#         weight = 1 / (1 + math.exp(-x)) + EPSILON
+#         weights[acc] = weight
+#
+#     return random.choices(
+#         list(weights.keys()),
+#         weights=list(weights.values()),
+#         k=1
+#     )[0]
 
 """Think of removing/refactoring func() below, since it only suitable for representing purposes"""
 async def get_wise_balances(wise_client, profile_id):
@@ -793,10 +818,10 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
                 transfer_amount = float(transfer['amount'])
                 transfer_name = transfer['name']
-
+# TODO: Add safe architecture: similarity score>=95 - release, 80<=score<95 - manual verification, 80<score - reject
                 # Match by amount and name (with some tolerance for amount)
                 amount_match = abs(transfer_amount - amount) < 0.01
-                name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
+                name_match = names_match(transfer_name, buyer_name)
 
                 if amount_match and name_match:
                     matching_transfer = transfer
@@ -916,8 +941,8 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
 
                 # Match by amount and name (with some tolerance for amount)
                 amount_match = abs(transfer_amount - amount) < 0.01
-                name_match = seller_name and seller_name.lower() in transfer_name.lower()
-
+                name_match, score = names_match(seller_name, transfer_name)
+     #TODO: Add safe architecture: similarity score>=95 - release, 80<=score<95 - manual verification, 80<score - reject
                 if amount_match and name_match:
                     matching_transfer = transfer
                     break

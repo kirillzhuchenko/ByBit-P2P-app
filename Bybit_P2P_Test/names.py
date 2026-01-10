@@ -89,7 +89,7 @@ def calculate_similarity(name1, name2):
     return SequenceMatcher(None, name1, name2).ratio()
 
 
-def names_match(name1, name2, threshold=0.85, lang_code1=None, lang_code2=None):
+def names_match(name1, name2, threshold=0.85, lang_code1=None, lang_code2=None, details=False):
     """
     Check if two names match across different languages/scripts
 
@@ -112,8 +112,10 @@ def names_match(name1, name2, threshold=0.85, lang_code1=None, lang_code2=None):
 
     # Determine if they match
     match = similarity >= threshold
+    if details:
+        return match, similarity, processed1, processed2
 
-    return match, similarity, processed1, processed2
+    return match, similarity
 
 
 # Example usage
