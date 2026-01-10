@@ -35,7 +35,10 @@ alert = {
     "loop_error": "⛔ATTENTION⛔ CRITICAL LOOP ERROR. Event loop has stopped.",
     "ad_payload": "⚠️ATTENTION⚠️ Failed to build ad payload. Attention required.",
     "skip_sell": "⚠️ATTENTION⚠️ Skipping sell order due to fetch error. Order # ",
-    "skip_buy": "⚠️ATTENTION⚠️ Skipping buy order due to fetch error. Order # "
+    "skip_buy": "⚠️ATTENTION⚠️ Skipping buy order due to fetch error. Order # ",
+    "save_match": "⚠️ATTENTION⚠️ Failed to save matched names in database for order ",
+    "verification": "⚠️ATTENTION⚠️ Manual verification required for order #",
+    "verify_reject": "⚠️ATTENTION⚠️ Failed to add to database due to low matching score. Order #"
 }
 
 #=====================
@@ -808,6 +811,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
         # Search for matching transfer in Wise incoming transfers
         matching_transfer = None
+        match_score = 0
         for transfer in incoming_transfers:
             if payment_type == PaymentType.WISE:
                 transfer_ref = transfer['reference']
@@ -818,14 +822,22 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
                 transfer_amount = float(transfer['amount'])
                 transfer_name = transfer['name']
-# TODO: Add safe architecture: similarity score>=95 - release, 80<=score<95 - manual verification, 80<score - reject
+
                 # Match by amount and name (with some tolerance for amount)
                 amount_match = abs(transfer_amount - amount) < 0.01
-                name_match = names_match(transfer_name, buyer_name)
-
+                name_match, match_score = names_match(transfer_name, buyer_name)
+# TODO: Add safe architecture: similarity score>=95 - release, 80<=score<95 - manual verification, 80<score - reject
                 if amount_match and name_match:
-                    matching_transfer = transfer
-                    break
+                    if match_score >= 0.95:
+                        matching_transfer = transfer
+                        break
+                    elif match_score >= 0.8:
+                        matching_transfer = transfer
+                        send_telegram_message(f"{alert.get('verification')} {order_id}")
+                        break
+                    else:
+                        matching_transfer = transfer
+                        send_telegram_message(f"{alert.get('verify_reject')} {order_id}")
 
         if matching_transfer:
             print(f"   ✅ VERIFIED: Transfer found on Wise")
@@ -833,6 +845,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
             print(f"      Wise Amount: ${matching_transfer['amount']}")
             print(f"      Wise Reference: {matching_transfer['reference']}")
             print(f"      Wise Time: {matching_transfer['time']}")
+            print(f"      Match score: {match_score:.2%}")
 
             # Save match to database
             try:
@@ -847,10 +860,11 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                     verification_source=VerificationSource.WISE_INCOMING
                 )
                 print(f"      💾 Match saved to database (ID: {match_id})")
+                send_telegram_message(f"   🚀 Ready to release crypto to buyer. Order #{order_id}") # Keep for beta, can be deleted when go live
                 print(f"   🚀 Ready to release crypto to buyer")
             except Exception as e:
                 print(f"      ⚠️ Failed to save match to database: {e}")
-                send_telegram_message(f"⚠️ Failed to save match for order {order_id}: {e}")
+                send_telegram_message(f"{alert.get("save_match")} {order_id}: {e}")
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise transfer found")
             print(f"      Expected: ${amount} from {buyer_name}")
@@ -970,7 +984,7 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
                 print(f"   ✓ Payment confirmed to seller")
             except Exception as e:
                 print(f"      ⚠️ Failed to save match to database: {e}")
-                send_telegram_message(f"⚠️ Failed to save match for order {order_id}: {e}")
+                send_telegram_message(f"{alert.get("save_match")} {order_id}: {e}")
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise payment found")
             print(f"      Expected: ${amount} to {seller_name}")
