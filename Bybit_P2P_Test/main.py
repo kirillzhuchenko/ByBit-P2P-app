@@ -6,7 +6,7 @@ import asyncio
 import os
 import uuid
 from io import StringIO
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 import csv
 from dataclasses import dataclass
@@ -830,14 +830,15 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                 if amount_match and name_match:
                     if match_score >= 0.95:
                         matching_transfer = transfer
+                        send_telegram_message(f"{alert.get('verification')} {order_id} with match score {match_score:.2%}.")
                         break
                     elif match_score >= 0.8:
                         matching_transfer = transfer
-                        send_telegram_message(f"{alert.get('verification')} {order_id}")
+                        send_telegram_message(f"{alert.get('verification')} {order_id} with match score {match_score:.2%}.")
                         break
                     else:
                         matching_transfer = transfer
-                        send_telegram_message(f"{alert.get('verify_reject')} {order_id}")
+                        send_telegram_message(f"{alert.get('verify_reject')} {order_id} with match score {match_score:.2%}.")
 
         if matching_transfer:
             print(f"   ✅ VERIFIED: Transfer found on Wise")
@@ -1109,6 +1110,10 @@ async def main():
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
         print("🔁 Starting continuous verification loop...\n")
 
+        # last_cleanup = datetime.now()
+        yesterday = datetime.now() - timedelta(days=30)
+        last_cleanup = yesterday
+
         while True:
             try:
                 current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
@@ -1129,6 +1134,17 @@ async def main():
                 stats = db.get_statistics()
                 print(f"\n📊 Database Stats: {stats['total_matches']} matches | "
                       f"Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
+
+                # Archive old matches to separate database
+                if (datetime.now() - last_cleanup).days >= 1:
+                    print("\n🗑️ Running daily cleanup...")
+                    old_count = db.get_old_matches_count(days=30)
+                    if old_count > 0:
+                        # This will archive AND delete automatically
+                        db.archive_old_matches(days=30)
+                    else:
+                        print("   No old records to archive")
+                    last_cleanup = datetime.now()
 
             except Exception as e:
                 send_telegram_message(f'{alert.get("loop_error")}, {e})')

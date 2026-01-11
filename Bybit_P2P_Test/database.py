@@ -354,6 +354,117 @@ class Database:
             cursor.execute("DELETE FROM matched_orders")
             conn.commit()
 
+    def delete_old_matches(self, days: int = 30) -> int:
+        """
+        Delete matches older than specified number of days.
+
+        Args:
+            days: Number of days to keep (default: 30)
+
+        Returns:
+            Number of deleted records
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM matched_orders 
+                WHERE matched_at < datetime('now', '-' || ? || ' days')
+            """, (days,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            return deleted_count
+
+    def get_old_matches_count(self, days: int = 30) -> int:
+        """
+        Count matches older than specified number of days.
+        Useful to check before deleting.
+
+        Args:
+            days: Number of days threshold
+
+        Returns:
+            Count of old records
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM matched_orders 
+                WHERE matched_at < datetime('now', '-' || ? || ' days')
+            """, (days,))
+            return cursor.fetchone()[0]
+
+    def archive_old_matches(self, days: int = 30, archive_db_path: str = "matched_orders_archive.db") -> int:
+        """
+        Archive old matches to a separate database before deletion.
+        This is safer than direct deletion as you keep a backup.
+
+        Args:
+            days: Number of days to keep in main database
+            archive_db_path: Path to archive database
+
+        Returns:
+            Number of archived records
+        """
+        # Get old matches
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM matched_orders 
+                WHERE matched_at < datetime('now', '-' || ? || ' days')
+            """, (days,))
+            old_matches = cursor.fetchall()
+
+        if not old_matches:
+            return 0
+
+        # Create archive database with same structure
+        archive_conn = sqlite3.connect(archive_db_path)
+        archive_cursor = archive_conn.cursor()
+
+        # Create table in archive if it doesn't exist
+        archive_cursor.execute("""
+            CREATE TABLE IF NOT EXISTS matched_orders (
+                match_id INTEGER PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                order_side INTEGER NOT NULL,
+                order_amount REAL NOT NULL,
+                counterparty_name TEXT NOT NULL,
+                wise_transfer_reference TEXT NOT NULL,
+                wise_amount REAL NOT NULL,
+                wise_direction TEXT NOT NULL,
+                matched_at TIMESTAMP NOT NULL,
+                verification_source INTEGER NOT NULL,
+                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Insert old matches into archive (skip if already exists)
+        archived_count = 0
+        for match in old_matches:
+            try:
+                archive_cursor.execute("""
+                    INSERT INTO matched_orders (
+                        match_id, order_id, order_side, order_amount,
+                        counterparty_name, wise_transfer_reference,
+                        wise_amount, wise_direction, matched_at, verification_source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, match)
+                archived_count += 1
+            except sqlite3.IntegrityError:
+                # Record already exists in archive, skip it
+                pass
+
+        archive_conn.commit()
+        archive_conn.close()
+
+        # Now delete from main database (all old matches, even if already archived)
+        deleted_count = self.delete_old_matches(days)
+
+        if archived_count > 0 or deleted_count > 0:
+            print(f"✅ Archived {archived_count} new records and deleted {deleted_count} from main database")
+
+        return archived_count
+
 
 # Example usage
 if __name__ == "__main__":
