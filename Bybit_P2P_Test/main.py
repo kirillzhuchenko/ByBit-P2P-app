@@ -6,7 +6,7 @@ import asyncio
 import os
 import uuid
 from io import StringIO
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import httpx
 import csv
 from dataclasses import dataclass
@@ -14,8 +14,7 @@ from enum import IntEnum, StrEnum
 from typing import TypedDict
 from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
-from database import Database, VerificationSource
-from names import names_match
+from database import Database, VerificationSource, VerificationStatus
 
 
 #=====================
@@ -35,10 +34,7 @@ alert = {
     "loop_error": "⛔ATTENTION⛔ CRITICAL LOOP ERROR. Event loop has stopped.",
     "ad_payload": "⚠️ATTENTION⚠️ Failed to build ad payload. Attention required.",
     "skip_sell": "⚠️ATTENTION⚠️ Skipping sell order due to fetch error. Order # ",
-    "skip_buy": "⚠️ATTENTION⚠️ Skipping buy order due to fetch error. Order # ",
-    "save_match": "⚠️ATTENTION⚠️ Failed to save matched names in database for order ",
-    "verification": "⚠️ATTENTION⚠️ Manual verification required for order #",
-    "verify_reject": "⚠️ATTENTION⚠️ Failed to add to database due to low matching score. Order #"
+    "skip_buy": "⚠️ATTENTION⚠️ Skipping buy order due to fetch error. Order # "
 }
 
 #=====================
@@ -84,30 +80,6 @@ async def get_wise_balance_value(wise_client, profile_id, currency="USD") -> flo
         if b["currency"] == currency:
             return float(b["amount"]["value"])
     return 0.0
-
-#TODO: Think of randomly choosing account to pay to. Note: Need to open multiple business accounts. 6 should be enough (hopefully)
-"""choose_account() wights balances and randomly chooses where to pay to, the one with lowest funds will get higher priority."""
-
-# import random
-# import math
-#
-# EPSILON = 1e-6
-# TAU = 200
-#
-# def choose_account(balances):
-#     avg = sum(balances.values()) / len(balances)
-#
-#     weights = {}
-#     for acc, balance in balances.items():
-#         x = (avg - balance) / TAU
-#         weight = 1 / (1 + math.exp(-x)) + EPSILON
-#         weights[acc] = weight
-#
-#     return random.choices(
-#         list(weights.keys()),
-#         weights=list(weights.values()),
-#         k=1
-#     )[0]
 
 """Think of removing/refactoring func() below, since it only suitable for representing purposes"""
 async def get_wise_balances(wise_client, profile_id):
@@ -257,6 +229,7 @@ class ActionType(StrEnum):
     ACTIVATE = "ACTIVE"
 
 class OrderSide(IntEnum):
+    """Order side enum matching main code"""
     BUY = 0
     SELL = 1
 
@@ -679,7 +652,7 @@ async def get_order_details_generic(client: P2P, orders_list: list):
 
         result_data = detail.get("result", {})
 
-        side = result_data.get("side")
+        side = order.get("side")  # or result_data.get("side") depending on where it's stored
 
         order_dict = {
             "orderId": order["orderId"],
@@ -771,7 +744,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
     """
     Process SELL orders - verify incoming Wise payments from buyers.
     Only verifies orders with status 20 (PAID).
-    Uses database to prevent duplicate matching persistently.
+    Uses database to prevent duplicate matching and notifications.
     """
 
     if not sell_orders:
@@ -799,10 +772,29 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
         print(f"   Status: {status} | Buyer: {buyer_name}")
         print(f"   Payment Type: {payment_type} | Amount: ${amount}")
 
-        # Check if order already matched in database
-        if db.is_order_matched(order_id):
-            print(f"   ✅ Order already matched in database (skipping)")
-            continue
+        # Check if order already exists in database
+        existing_order = db.get_match_by_order_id(order_id)
+
+        if existing_order:
+            # Order exists in database
+            if existing_order['verification_status'] == VerificationStatus.VERIFIED:
+                print(f"   ✅ Order already verified in database (skipping)")
+                continue
+            else:
+                print(f"   📝 Order exists as NOT_VERIFIED, checking for match...")
+        else:
+            # New order - add to database as NOT_VERIFIED
+            try:
+                db.add_order(
+                    order_id=order_id,
+                    order_side=OrderSide.SELL,
+                    order_amount=amount,
+                    counterparty_name=buyer_name,
+                    verification_status=VerificationStatus.NOT_VERIFIED
+                )
+                print(f"   📝 New order added to database as NOT_VERIFIED")
+            except Exception as e:
+                print(f"   ⚠️ Failed to add order to database: {e}")
 
         # Only verify if status is PAID (20)
         if status != OrderStatus.PAID:
@@ -811,7 +803,6 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
         # Search for matching transfer in Wise incoming transfers
         matching_transfer = None
-        match_score = 0
         for transfer in incoming_transfers:
             if payment_type == PaymentType.WISE:
                 transfer_ref = transfer['reference']
@@ -825,20 +816,11 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
                 # Match by amount and name (with some tolerance for amount)
                 amount_match = abs(transfer_amount - amount) < 0.01
-                name_match, match_score = names_match(transfer_name, buyer_name)
-# TODO: Add safe architecture: similarity score>=95 - release, 80<=score<95 - manual verification, 80<score - reject
+                name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
+
                 if amount_match and name_match:
-                    if match_score >= 0.95:
-                        matching_transfer = transfer
-                        send_telegram_message(f"{alert.get('verification')} {order_id} with match score {match_score:.2%}.")
-                        break
-                    elif match_score >= 0.8:
-                        matching_transfer = transfer
-                        send_telegram_message(f"{alert.get('verification')} {order_id} with match score {match_score:.2%}.")
-                        break
-                    else:
-                        matching_transfer = transfer
-                        send_telegram_message(f"{alert.get('verify_reject')} {order_id} with match score {match_score:.2%}.")
+                    matching_transfer = transfer
+                    break
 
         if matching_transfer:
             print(f"   ✅ VERIFIED: Transfer found on Wise")
@@ -846,26 +828,48 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
             print(f"      Wise Amount: ${matching_transfer['amount']}")
             print(f"      Wise Reference: {matching_transfer['reference']}")
             print(f"      Wise Time: {matching_transfer['time']}")
-            print(f"      Match score: {match_score:.2%}")
 
-            # Save match to database
+            # Update order to VERIFIED status
             try:
-                match_id = db.add_match(
-                    order_id=order_id,
-                    order_side=OrderSide.SELL,
-                    order_amount=amount,
-                    counterparty_name=buyer_name,
-                    wise_transfer_reference=matching_transfer['reference'],
-                    wise_amount=float(matching_transfer['amount']),
-                    wise_direction="CREDIT",
-                    verification_source=VerificationSource.WISE_INCOMING
-                )
-                print(f"      💾 Match saved to database (ID: {match_id})")
-                send_telegram_message(f"   🚀 Ready to release crypto to buyer. Order #{order_id}") # Keep for beta, can be deleted when go live
+                if existing_order:
+                    # Update existing order
+                    db.update_order_verification(
+                        order_id=order_id,
+                        wise_transfer_reference=matching_transfer['reference'],
+                        wise_amount=float(matching_transfer['amount']),
+                        wise_direction="CREDIT",
+                        verification_source=VerificationSource.WISE_INCOMING
+                    )
+                    print(f"      💾 Order updated to VERIFIED in database")
+                else:
+                    # Add as verified match (shouldn't happen but handle it)
+                    match_id = db.add_match(
+                        order_id=order_id,
+                        order_side=OrderSide.SELL,
+                        order_amount=amount,
+                        counterparty_name=buyer_name,
+                        wise_transfer_reference=matching_transfer['reference'],
+                        wise_amount=float(matching_transfer['amount']),
+                        wise_direction="CREDIT",
+                        verification_source=VerificationSource.WISE_INCOMING
+                    )
+                    print(f"      💾 Match saved to database (ID: {match_id})")
+
                 print(f"   🚀 Ready to release crypto to buyer")
+
+                # Send success notification ONLY if order wasn't already verified
+                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                    send_telegram_message(
+                        f"✅ SELL Order {order_id} VERIFIED\n"
+                        f"Amount: ${amount}\n"
+                        f"Buyer: {buyer_name}\n"
+                        f"Wise Transfer: {matching_transfer['reference']}\n"
+                        f"Ready to release crypto!"
+                    )
+
             except Exception as e:
-                print(f"      ⚠️ Failed to save match to database: {e}")
-                send_telegram_message(f"{alert.get("save_match")} {order_id}: {e}")
+                print(f"      ⚠️ Failed to save verification to database: {e}")
+                send_telegram_message(f"⚠️ Failed to save match for order {order_id}: {e}")
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise transfer found")
             print(f"      Expected: ${amount} from {buyer_name}")
@@ -885,25 +889,30 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                 for dup_transfer, used_by in potential_duplicates:
                     print(f"      Transfer {dup_transfer['reference']} already used by order {used_by}")
                 print(f"      This could be a duplicate fraudulent order!")
-                send_telegram_message(
-                    f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
-                    f"SELL Order {order_id} marked PAID\n"
-                    f"Amount: ${amount} | Buyer: {buyer_name}\n"
-                    f"Matching Wise transfer already used for order {potential_duplicates[0][1]}!\n"
-                    f"Possible duplicate order scam attempt."
-                )
+
+                # Send fraud alert ONLY if this is a new detection (order not yet in DB or not verified)
+                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                    send_telegram_message(
+                        f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
+                        f"SELL Order {order_id} marked PAID\n"
+                        f"Amount: ${amount} | Buyer: {buyer_name}\n"
+                        f"Matching Wise transfer already used for order {potential_duplicates[0][1]}!\n"
+                        f"Possible duplicate order scam attempt."
+                    )
             else:
-                send_telegram_message(
-                    f"⚠️ SELL Order {order_id} marked PAID but no Wise transfer found!\n"
-                    f"Expected: ${amount} from {buyer_name}"
-                )
+                # Send "no match found" alert ONLY if this is a new detection
+                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                    send_telegram_message(
+                        f"⚠️ SELL Order {order_id} marked PAID but no Wise transfer found!\n"
+                        f"Expected: ${amount} from {buyer_name}"
+                    )
 
 
 def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database) -> None:
     """
     Process BUY orders - verify outgoing Wise payments to sellers.
     Only verifies orders with status 20 (PAID).
-    Uses database to prevent duplicate matching.
+    Uses database to prevent duplicate matching and notifications.
     """
 
     if not buy_orders:
@@ -931,10 +940,29 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
         print(f"   Status: {status} | Seller: {seller_name}")
         print(f"   Payment Type: {payment_type} | Amount: ${amount}")
 
-        # Check if order already matched in database
-        if db.is_order_matched(order_id):
-            print(f"   ✅ Order already matched in database (skipping)")
-            continue
+        # Check if order already exists in database
+        existing_order = db.get_match_by_order_id(order_id)
+
+        if existing_order:
+            # Order exists in database
+            if existing_order['verification_status'] == VerificationStatus.VERIFIED:
+                print(f"   ✅ Order already verified in database (skipping)")
+                continue
+            else:
+                print(f"   📝 Order exists as NOT_VERIFIED, checking for match...")
+        else:
+            # New order - add to database as NOT_VERIFIED
+            try:
+                db.add_order(
+                    order_id=order_id,
+                    order_side=OrderSide.BUY,
+                    order_amount=amount,
+                    counterparty_name=seller_name,
+                    verification_status=VerificationStatus.NOT_VERIFIED
+                )
+                print(f"   📝 New order added to database as NOT_VERIFIED")
+            except Exception as e:
+                print(f"   ⚠️ Failed to add order to database: {e}")
 
         # Only verify if status is PAID (20)
         if status != OrderStatus.PAID:
@@ -956,8 +984,8 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
 
                 # Match by amount and name (with some tolerance for amount)
                 amount_match = abs(transfer_amount - amount) < 0.01
-                name_match, score = names_match(seller_name, transfer_name)
-     #TODO: Add safe architecture: similarity score>=95 - release, 80<=score<95 - manual verification, 80<score - reject
+                name_match = seller_name and seller_name.lower() in transfer_name.lower()
+
                 if amount_match and name_match:
                     matching_transfer = transfer
                     break
@@ -969,23 +997,47 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
             print(f"      Wise Reference: {matching_transfer['reference']}")
             print(f"      Wise Time: {matching_transfer['time']}")
 
-            # Save match to database
+            # Update order to VERIFIED status
             try:
-                match_id = db.add_match(
-                    order_id=order_id,
-                    order_side=OrderSide.BUY,
-                    order_amount=amount,
-                    counterparty_name=seller_name,
-                    wise_transfer_reference=matching_transfer['reference'],
-                    wise_amount=abs(float(matching_transfer['amount'])),
-                    wise_direction="DEBIT",
-                    verification_source=VerificationSource.WISE_OUTGOING
-                )
-                print(f"      💾 Match saved to database (ID: {match_id})")
+                if existing_order:
+                    # Update existing order
+                    db.update_order_verification(
+                        order_id=order_id,
+                        wise_transfer_reference=matching_transfer['reference'],
+                        wise_amount=abs(float(matching_transfer['amount'])),
+                        wise_direction="DEBIT",
+                        verification_source=VerificationSource.WISE_OUTGOING
+                    )
+                    print(f"      💾 Order updated to VERIFIED in database")
+                else:
+                    # Add as verified match (shouldn't happen but handle it)
+                    match_id = db.add_match(
+                        order_id=order_id,
+                        order_side=OrderSide.BUY,
+                        order_amount=amount,
+                        counterparty_name=seller_name,
+                        wise_transfer_reference=matching_transfer['reference'],
+                        wise_amount=abs(float(matching_transfer['amount'])),
+                        wise_direction="DEBIT",
+                        verification_source=VerificationSource.WISE_OUTGOING
+                    )
+                    print(f"      💾 Match saved to database (ID: {match_id})")
+
                 print(f"   ✓ Payment confirmed to seller")
+
+                # Send success notification ONLY if order wasn't already verified
+                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                    send_telegram_message(
+                        f"✅ BUY Order {order_id} VERIFIED\n"
+                        f"Amount: ${amount}\n"
+                        f"Seller: {seller_name}\n"
+                        f"Wise Transfer: {matching_transfer['reference']}\n"
+                        f"Payment confirmed!"
+                    )
+
             except Exception as e:
-                print(f"      ⚠️ Failed to save match to database: {e}")
-                send_telegram_message(f"{alert.get("save_match")} {order_id}: {e}")
+                print(f"      ⚠️ Failed to save verification to database: {e}")
+                send_telegram_message(f"⚠️ Failed to save match for order {order_id}: {e}")
         else:
             print(f"   ❌ NO MATCH: No corresponding Wise payment found")
             print(f"      Expected: ${amount} to {seller_name}")
@@ -1002,18 +1054,23 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
             if potential_duplicates:
                 print(f"   ⚠️ WARNING: Found transfer(s) with matching amount but already matched to other orders")
                 print(f"      This could be a duplicate fraudulent order!")
-                send_telegram_message(
-                    f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
-                    f"BUY Order {order_id} marked PAID\n"
-                    f"Amount: ${amount} | Seller: {seller_name}\n"
-                    f"Matching Wise payment already used for another order!\n"
-                    f"Possible duplicate order scam attempt."
-                )
+
+                # Send fraud alert ONLY if this is a new detection
+                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                    send_telegram_message(
+                        f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
+                        f"BUY Order {order_id} marked PAID\n"
+                        f"Amount: ${amount} | Seller: {seller_name}\n"
+                        f"Matching Wise payment already used for another order!\n"
+                        f"Possible duplicate order scam attempt."
+                    )
             else:
-                send_telegram_message(
-                    f"⚠️ BUY Order {order_id} marked PAID but no Wise payment found!\n"
-                    f"Expected: ${amount} to {seller_name}"
-                )
+                # Send "no match found" alert ONLY if this is a new detection
+                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                    send_telegram_message(
+                        f"⚠️ BUY Order {order_id} marked PAID but no Wise payment found!\n"
+                        f"Expected: ${amount} to {seller_name}"
+                    )
 
 
 # Update the main loop to include database
@@ -1110,9 +1167,7 @@ async def main():
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
         print("🔁 Starting continuous verification loop...\n")
 
-        # last_cleanup = datetime.now()
-        yesterday = datetime.now() - timedelta(days=30)
-        last_cleanup = yesterday
+        last_cleanup = datetime.now()
 
         while True:
             try:
@@ -1132,19 +1187,32 @@ async def main():
 
                 # Display database statistics periodically
                 stats = db.get_statistics()
-                print(f"\n📊 Database Stats: {stats['total_matches']} matches | "
-                      f"Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
+                print(f"\n📊 Database Stats: {stats['total_matches']} total | "
+                      f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified")
+                print(f"   Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
 
-                # Archive old matches to separate database
+                # Daily cleanup - delete unverified orders and archive old verified orders
                 if (datetime.now() - last_cleanup).days >= 1:
                     print("\n🗑️ Running daily cleanup...")
+
+                    # Delete unverified orders
+                    unverified_count = len(db.get_unverified_orders())
+                    if unverified_count > 0:
+                        deleted = db.delete_unverified_orders()
+                        print(f"   🗑️ Deleted {deleted} unverified orders")
+                    else:
+                        print(f"   ✅ No unverified orders to delete")
+
+                    # Archive old verified orders (30+ days)
                     old_count = db.get_old_matches_count(days=30)
                     if old_count > 0:
-                        # This will archive AND delete automatically
-                        db.archive_old_matches(days=30)
+                        archived = db.archive_old_matches(days=30)
+                        print(f"   📦 Archived {archived} old verified orders")
                     else:
-                        print("   No old records to archive")
+                        print(f"   ✅ No old orders to archive")
+
                     last_cleanup = datetime.now()
+                    print(f"   ✅ Daily cleanup completed at {last_cleanup.strftime('%Y-%m-%d %H:%M:%S')}")
 
             except Exception as e:
                 send_telegram_message(f'{alert.get("loop_error")}, {e})')
