@@ -229,7 +229,6 @@ class ActionType(StrEnum):
     ACTIVATE = "ACTIVE"
 
 class OrderSide(IntEnum):
-    """Order side enum matching main code"""
     BUY = 0
     SELL = 1
 
@@ -780,6 +779,9 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
             if existing_order['verification_status'] == VerificationStatus.VERIFIED:
                 print(f"   ✅ Order already verified in database (skipping)")
                 continue
+            elif existing_order['verification_status'] == VerificationStatus.FRAUD_DETECTED:
+                print(f"   🚨 Order previously marked as FRAUD - rechecking for legitimate payment...")
+                # Don't skip - continue to check if a real payment has arrived
             else:
                 print(f"   📝 Order exists as NOT_VERIFIED, checking for match...")
         else:
@@ -831,16 +833,30 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
             # Update order to VERIFIED status
             try:
+                was_fraud = existing_order and existing_order['verification_status'] == VerificationStatus.FRAUD_DETECTED
+
                 if existing_order:
-                    # Update existing order
-                    db.update_order_verification(
-                        order_id=order_id,
-                        wise_transfer_reference=matching_transfer['reference'],
-                        wise_amount=float(matching_transfer['amount']),
-                        wise_direction="CREDIT",
-                        verification_source=VerificationSource.WISE_INCOMING
-                    )
-                    print(f"      💾 Order updated to VERIFIED in database")
+                    # Check if this was previously marked as fraud
+                    if was_fraud:
+                        # Override fraud status with verification
+                        db.override_fraud_and_verify(
+                            order_id=order_id,
+                            wise_transfer_reference=matching_transfer['reference'],
+                            wise_amount=float(matching_transfer['amount']),
+                            wise_direction="CREDIT",
+                            verification_source=VerificationSource.WISE_INCOMING
+                        )
+                        print(f"      ✅ FRAUD STATUS OVERRIDDEN - Order now VERIFIED")
+                    else:
+                        # Update existing order normally
+                        db.update_order_verification(
+                            order_id=order_id,
+                            wise_transfer_reference=matching_transfer['reference'],
+                            wise_amount=float(matching_transfer['amount']),
+                            wise_direction="CREDIT",
+                            verification_source=VerificationSource.WISE_INCOMING
+                        )
+                        print(f"      💾 Order updated to VERIFIED in database")
                 else:
                     # Add as verified match (shouldn't happen but handle it)
                     match_id = db.add_match(
@@ -857,15 +873,26 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
                 print(f"   🚀 Ready to release crypto to buyer")
 
-                # Send success notification ONLY if order wasn't already verified
-                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
-                    send_telegram_message(
-                        f"✅ SELL Order {order_id} VERIFIED\n"
-                        f"Amount: ${amount}\n"
-                        f"Buyer: {buyer_name}\n"
-                        f"Wise Transfer: {matching_transfer['reference']}\n"
-                        f"Ready to release crypto!"
-                    )
+                # Send success notification
+                if not existing_order or existing_order['verification_status'] != VerificationStatus.VERIFIED:
+                    if was_fraud:
+                        # Special notification for fraud override
+                        send_telegram_message(
+                            f"✅ FRAUD ALERT RESOLVED - Order {order_id} NOW VERIFIED\n"
+                            f"Amount: ${amount}\n"
+                            f"Buyer: {buyer_name}\n"
+                            f"Wise Transfer: {matching_transfer['reference']}\n"
+                            f"Legitimate payment received. Safe to release crypto!"
+                        )
+                    else:
+                        # Normal success notification
+                        send_telegram_message(
+                            f"✅ SELL Order {order_id} VERIFIED\n"
+                            f"Amount: ${amount}\n"
+                            f"Buyer: {buyer_name}\n"
+                            f"Wise Transfer: {matching_transfer['reference']}\n"
+                            f"Ready to release crypto!"
+                        )
 
             except Exception as e:
                 print(f"      ⚠️ Failed to save verification to database: {e}")
@@ -890,8 +917,27 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                     print(f"      Transfer {dup_transfer['reference']} already used by order {used_by}")
                 print(f"      This could be a duplicate fraudulent order!")
 
-                # Send fraud alert ONLY if this is a new detection (order not yet in DB or not verified)
-                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                # Mark order as fraud and send alert ONLY if not already marked as fraud
+                if not existing_order or existing_order['verification_status'] != VerificationStatus.FRAUD_DETECTED:
+                    # Mark as fraud in database
+                    try:
+                        if existing_order:
+                            db.mark_order_as_fraud(order_id)
+                            print(f"      🚨 Order marked as FRAUD in database")
+                        else:
+                            # Add as fraud if doesn't exist
+                            db.add_order(
+                                order_id=order_id,
+                                order_side=OrderSide.SELL,
+                                order_amount=amount,
+                                counterparty_name=buyer_name,
+                                verification_status=VerificationStatus.FRAUD_DETECTED
+                            )
+                            print(f"      🚨 Order added to database as FRAUD")
+                    except Exception as e:
+                        print(f"      ⚠️ Failed to mark as fraud: {e}")
+
+                    # Send fraud alert (only once)
                     send_telegram_message(
                         f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
                         f"SELL Order {order_id} marked PAID\n"
@@ -948,6 +994,9 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
             if existing_order['verification_status'] == VerificationStatus.VERIFIED:
                 print(f"   ✅ Order already verified in database (skipping)")
                 continue
+            elif existing_order['verification_status'] == VerificationStatus.FRAUD_DETECTED:
+                print(f"   🚨 Order previously marked as FRAUD - rechecking for legitimate payment...")
+                # Don't skip - continue to check if a real payment has arrived
             else:
                 print(f"   📝 Order exists as NOT_VERIFIED, checking for match...")
         else:
@@ -999,16 +1048,30 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
 
             # Update order to VERIFIED status
             try:
+                was_fraud = existing_order and existing_order['verification_status'] == VerificationStatus.FRAUD_DETECTED
+
                 if existing_order:
-                    # Update existing order
-                    db.update_order_verification(
-                        order_id=order_id,
-                        wise_transfer_reference=matching_transfer['reference'],
-                        wise_amount=abs(float(matching_transfer['amount'])),
-                        wise_direction="DEBIT",
-                        verification_source=VerificationSource.WISE_OUTGOING
-                    )
-                    print(f"      💾 Order updated to VERIFIED in database")
+                    # Check if this was previously marked as fraud
+                    if was_fraud:
+                        # Override fraud status with verification
+                        db.override_fraud_and_verify(
+                            order_id=order_id,
+                            wise_transfer_reference=matching_transfer['reference'],
+                            wise_amount=abs(float(matching_transfer['amount'])),
+                            wise_direction="DEBIT",
+                            verification_source=VerificationSource.WISE_OUTGOING
+                        )
+                        print(f"      ✅ FRAUD STATUS OVERRIDDEN - Order now VERIFIED")
+                    else:
+                        # Update existing order normally
+                        db.update_order_verification(
+                            order_id=order_id,
+                            wise_transfer_reference=matching_transfer['reference'],
+                            wise_amount=abs(float(matching_transfer['amount'])),
+                            wise_direction="DEBIT",
+                            verification_source=VerificationSource.WISE_OUTGOING
+                        )
+                        print(f"      💾 Order updated to VERIFIED in database")
                 else:
                     # Add as verified match (shouldn't happen but handle it)
                     match_id = db.add_match(
@@ -1025,15 +1088,26 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
 
                 print(f"   ✓ Payment confirmed to seller")
 
-                # Send success notification ONLY if order wasn't already verified
-                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
-                    send_telegram_message(
-                        f"✅ BUY Order {order_id} VERIFIED\n"
-                        f"Amount: ${amount}\n"
-                        f"Seller: {seller_name}\n"
-                        f"Wise Transfer: {matching_transfer['reference']}\n"
-                        f"Payment confirmed!"
-                    )
+                # Send success notification
+                if not existing_order or existing_order['verification_status'] != VerificationStatus.VERIFIED:
+                    if was_fraud:
+                        # Special notification for fraud override
+                        send_telegram_message(
+                            f"✅ FRAUD ALERT RESOLVED - Order {order_id} NOW VERIFIED\n"
+                            f"Amount: ${amount}\n"
+                            f"Seller: {seller_name}\n"
+                            f"Wise Transfer: {matching_transfer['reference']}\n"
+                            f"Legitimate payment confirmed!"
+                        )
+                    else:
+                        # Normal success notification
+                        send_telegram_message(
+                            f"✅ BUY Order {order_id} VERIFIED\n"
+                            f"Amount: ${amount}\n"
+                            f"Seller: {seller_name}\n"
+                            f"Wise Transfer: {matching_transfer['reference']}\n"
+                            f"Payment confirmed!"
+                        )
 
             except Exception as e:
                 print(f"      ⚠️ Failed to save verification to database: {e}")
@@ -1055,8 +1129,27 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
                 print(f"   ⚠️ WARNING: Found transfer(s) with matching amount but already matched to other orders")
                 print(f"      This could be a duplicate fraudulent order!")
 
-                # Send fraud alert ONLY if this is a new detection
-                if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
+                # Mark order as fraud and send alert ONLY if not already marked as fraud
+                if not existing_order or existing_order['verification_status'] != VerificationStatus.FRAUD_DETECTED:
+                    # Mark as fraud in database
+                    try:
+                        if existing_order:
+                            db.mark_order_as_fraud(order_id)
+                            print(f"      🚨 Order marked as FRAUD in database")
+                        else:
+                            # Add as fraud if doesn't exist
+                            db.add_order(
+                                order_id=order_id,
+                                order_side=OrderSide.BUY,
+                                order_amount=amount,
+                                counterparty_name=seller_name,
+                                verification_status=VerificationStatus.FRAUD_DETECTED
+                            )
+                            print(f"      🚨 Order added to database as FRAUD")
+                    except Exception as e:
+                        print(f"      ⚠️ Failed to mark as fraud: {e}")
+
+                    # Send fraud alert (only once)
                     send_telegram_message(
                         f"🚨 POTENTIAL FRAUD ALERT 🚨\n"
                         f"BUY Order {order_id} marked PAID\n"
@@ -1188,7 +1281,8 @@ async def main():
                 # Display database statistics periodically
                 stats = db.get_statistics()
                 print(f"\n📊 Database Stats: {stats['total_matches']} total | "
-                      f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified")
+                      f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified | "
+                      f"{stats['fraud_orders']} fraud")
                 print(f"   Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
 
                 # Daily cleanup - delete unverified orders and archive old verified orders

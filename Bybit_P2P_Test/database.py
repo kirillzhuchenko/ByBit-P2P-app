@@ -26,6 +26,7 @@ class VerificationStatus(IntEnum):
     """Verification status of orders"""
     NOT_VERIFIED = 0
     VERIFIED = 1
+    FRAUD_DETECTED = 2
 
 
 class Database:
@@ -71,7 +72,7 @@ class Database:
                     CONSTRAINT chk_order_side CHECK (order_side IN (0, 1)),
                     CONSTRAINT chk_verification_source CHECK (verification_source IN (1, 2) OR verification_source IS NULL),
                     CONSTRAINT chk_wise_direction CHECK (wise_direction IN ('CREDIT', 'DEBIT') OR wise_direction IS NULL),
-                    CONSTRAINT chk_verification_status CHECK (verification_status IN (0, 1))
+                    CONSTRAINT chk_verification_status CHECK (verification_status IN (0, 1, 2))
                 )
             """)
 
@@ -253,6 +254,75 @@ class Database:
             )
             return cursor.fetchone() is not None
 
+    def mark_order_as_fraud(self, order_id: str) -> bool:
+        """
+        Mark an order as fraud detected.
+
+        Args:
+            order_id: ByBit order ID
+
+        Returns:
+            True if updated, False if order not found
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE matched_orders
+                SET verification_status = ?
+                WHERE order_id = ?
+            """, (
+                int(VerificationStatus.FRAUD_DETECTED),
+                order_id
+            ))
+
+            return cursor.rowcount > 0
+
+    def override_fraud_and_verify(
+        self,
+        order_id: str,
+        wise_transfer_reference: str,
+        wise_amount: float,
+        wise_direction: str,
+        verification_source: VerificationSource
+    ) -> bool:
+        """
+        Override fraud status and mark order as verified when legitimate payment is found.
+        This handles cases where an order was initially flagged as fraud but later
+        a valid matching transfer is discovered.
+
+        Args:
+            order_id: ByBit order ID
+            wise_transfer_reference: Wise transfer ID
+            wise_amount: Amount from Wise transfer
+            wise_direction: 'CREDIT' or 'DEBIT'
+            verification_source: Source of verification
+
+        Returns:
+            True if updated, False if order not found
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE matched_orders
+                SET wise_transfer_reference = ?,
+                    wise_amount = ?,
+                    wise_direction = ?,
+                    verification_source = ?,
+                    verification_status = ?
+                WHERE order_id = ?
+            """, (
+                wise_transfer_reference,
+                wise_amount,
+                wise_direction,
+                int(verification_source),
+                int(VerificationStatus.VERIFIED),
+                order_id
+            ))
+
+            return cursor.rowcount > 0
+
     def is_order_verified(self, order_id: str) -> bool:
         """Check if an order has been verified"""
         with self.get_connection() as conn:
@@ -326,6 +396,17 @@ class Database:
                 WHERE verification_status = ?
                 ORDER BY matched_at DESC
             """, (VerificationStatus.VERIFIED,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_fraud_orders(self) -> List[Dict[str, Any]]:
+        """Get all orders marked as fraud"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM matched_orders 
+                WHERE verification_status = ?
+                ORDER BY matched_at DESC
+            """, (VerificationStatus.FRAUD_DETECTED,))
             return [dict(row) for row in cursor.fetchall()]
 
     def delete_unverified_orders(self) -> int:
@@ -419,6 +500,12 @@ class Database:
             )
             unverified_count = cursor.fetchone()[0]
 
+            cursor.execute(
+                "SELECT COUNT(*) FROM matched_orders WHERE verification_status = ?",
+                (VerificationStatus.FRAUD_DETECTED,)
+            )
+            fraud_count = cursor.fetchone()[0]
+
             # Buy/Sell counts (verified only)
             cursor.execute(
                 "SELECT COUNT(*) FROM matched_orders WHERE order_side = ? AND verification_status = ?",
@@ -449,6 +536,7 @@ class Database:
                 "total_matches": total_matches,
                 "verified_orders": verified_count,
                 "unverified_orders": unverified_count,
+                "fraud_orders": fraud_count,
                 "buy_orders": buy_count,
                 "sell_orders": sell_count,
                 "total_buy_volume": buy_volume,
