@@ -38,7 +38,8 @@ alert = {
     "skip_buy": "⚠️ATTENTION⚠️ Skipping buy order due to fetch error. Order # ",
     "save_match": "⚠️ATTENTION⚠️ Failed to save matched names in database for order ",
     "verification": "⚠️ATTENTION⚠️ Manual verification required for order #",
-    "verify_reject": "⚠️ATTENTION⚠️ Name added to database with low matching score. Order #"
+    "verify_reject": "⚠️ATTENTION⚠️ Name added to database with low matching score. Order #",
+    "add_order": "📝 New order added to database as NOT_VERIFIED"
 }
 
 #=====================
@@ -805,7 +806,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                     counterparty_name=buyer_name,
                     verification_status=VerificationStatus.NOT_VERIFIED
                 )
-                print(f"   📝 New order added to database as NOT_VERIFIED")
+                send_telegram_message(f'{alert.get("add_order")} Order #{order_id}')
             except Exception as e:
                 print(f"   ⚠️ Failed to add order to database: {e}")
 
@@ -829,7 +830,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
 
                 # Match by amount and name (with some tolerance for amount)
                 amount_match = abs(transfer_amount - amount) < 0.01
-                name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
+                # name_match = buyer_name and buyer_name.lower() in transfer_name.lower()
 
                 name_match, match_score = names_match(transfer_name, buyer_name)
 
