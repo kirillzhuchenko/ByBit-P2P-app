@@ -1,10 +1,10 @@
 """
 Database module for tracking matched orders between ByBit P2P and Wise transfers.
-Stores verification data to prevent double-matching and maintain audit trail.
+Stores verification data and messaging status to prevent double-matching and maintain audit trail.
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from enum import IntEnum
 from contextlib import contextmanager
@@ -30,7 +30,7 @@ class VerificationStatus(IntEnum):
 
 
 class Database:
-    """Database handler for matched order tracking"""
+    """Database handler for matched order tracking with messaging support"""
 
     def __init__(self, db_path: str = "matched_orders.db"):
         self.db_path = db_path
@@ -51,11 +51,11 @@ class Database:
             conn.close()
 
     def init_database(self):
-        """Initialize database schema"""
+        """Initialize database schema with messaging tracking"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            # Create matched_orders table
+            # Create matched_orders table with messaging fields
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS matched_orders (
                     match_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +69,9 @@ class Database:
                     matched_at TIMESTAMP NOT NULL,
                     verification_source INTEGER,
                     verification_status INTEGER NOT NULL DEFAULT 0,
+                    message_sent BOOLEAN DEFAULT 0,
+                    message_sent_at TIMESTAMP,
+                    message_retry_count INTEGER DEFAULT 0,
                     CONSTRAINT chk_order_side CHECK (order_side IN (0, 1)),
                     CONSTRAINT chk_verification_source CHECK (verification_source IN (1, 2) OR verification_source IS NULL),
                     CONSTRAINT chk_wise_direction CHECK (wise_direction IN ('CREDIT', 'DEBIT') OR wise_direction IS NULL),
@@ -95,6 +98,11 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_verification_status 
                 ON matched_orders(verification_status)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_sent 
+                ON matched_orders(message_sent)
             """)
 
             conn.commit()
@@ -243,6 +251,134 @@ class Database:
             ))
 
             return cursor.rowcount > 0
+
+    # =========================================================================
+    # MESSAGING METHODS
+    # =========================================================================
+
+    def mark_order_messaged(self, order_id: str, retry_count: int = 0) -> bool:
+        """
+        Mark that payment instructions have been sent for this order.
+
+        Args:
+            order_id: The order ID
+            retry_count: Number of times message sending was attempted
+
+        Returns:
+            True if updated, False if order not found
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE matched_orders 
+                SET message_sent = 1, 
+                    message_sent_at = ?,
+                    message_retry_count = ?
+                WHERE order_id = ?
+            """, (datetime.now().isoformat(), retry_count, order_id))
+            return cursor.rowcount > 0
+
+    def was_order_messaged(self, order_id: str) -> bool:
+        """
+        Check if payment instructions were already sent for this order.
+
+        Returns:
+            True if message was sent, False otherwise
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT message_sent FROM matched_orders WHERE order_id = ?
+            """, (order_id,))
+            result = cursor.fetchone()
+            return result[0] == 1 if result else False
+
+    def get_unmessaged_orders(self, order_side: Optional[OrderSide] = None) -> List[Dict[str, Any]]:
+        """
+        Get all orders that haven't been messaged yet.
+
+        Args:
+            order_side: Filter by order side (0=BUY, 1=SELL). None returns all.
+
+        Returns:
+            List of unmessaged orders
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if order_side is not None:
+                query = """
+                    SELECT order_id, order_side, order_amount, counterparty_name, matched_at
+                    FROM matched_orders 
+                    WHERE message_sent = 0 AND order_side = ?
+                    ORDER BY matched_at ASC
+                """
+                cursor.execute(query, (int(order_side),))
+            else:
+                query = """
+                    SELECT order_id, order_side, order_amount, counterparty_name, matched_at
+                    FROM matched_orders 
+                    WHERE message_sent = 0
+                    ORDER BY matched_at ASC
+                """
+                cursor.execute(query)
+
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_messaging_statistics(self) -> Dict[str, Any]:
+        """Get statistics about messaging status."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_orders,
+                    SUM(CASE WHEN message_sent = 1 THEN 1 ELSE 0 END) as messaged,
+                    SUM(CASE WHEN message_sent = 0 THEN 1 ELSE 0 END) as unmessaged,
+                    AVG(message_retry_count) as avg_retries
+                FROM matched_orders
+                WHERE order_side = 1  -- SELL orders only
+            """)
+            row = cursor.fetchone()
+            return {
+                'total_sell_orders': row[0] or 0,
+                'messaged': row[1] or 0,
+                'unmessaged': row[2] or 0,
+                'avg_retries': round(row[3] or 0, 2)
+            }
+
+    def reset_message_status(self, order_id: str) -> bool:
+        """
+        Reset message status for an order (useful for re-sending).
+        Use with caution - may cause duplicate messages.
+
+        Returns:
+            True if updated, False if order not found
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE matched_orders 
+                SET message_sent = 0,
+                    message_sent_at = NULL
+                WHERE order_id = ?
+            """, (order_id,))
+            return cursor.rowcount > 0
+
+    def get_orders_messaged_in_last_hours(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """Get orders that were messaged in the last N hours."""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT order_id, counterparty_name, order_amount, message_sent_at
+                FROM matched_orders
+                WHERE message_sent = 1 AND message_sent_at > ?
+                ORDER BY message_sent_at DESC
+            """, (cutoff,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # EXISTING METHODS (unchanged)
+    # =========================================================================
 
     def is_order_matched(self, order_id: str) -> bool:
         """Check if an order has already been matched"""
@@ -633,11 +769,15 @@ class Database:
                 order_side INTEGER NOT NULL,
                 order_amount REAL NOT NULL,
                 counterparty_name TEXT NOT NULL,
-                wise_transfer_reference TEXT NOT NULL,
-                wise_amount REAL NOT NULL,
-                wise_direction TEXT NOT NULL,
+                wise_transfer_reference TEXT,
+                wise_amount REAL,
+                wise_direction TEXT,
                 matched_at TIMESTAMP NOT NULL,
-                verification_source INTEGER NOT NULL,
+                verification_source INTEGER,
+                verification_status INTEGER NOT NULL,
+                message_sent BOOLEAN,
+                message_sent_at TIMESTAMP,
+                message_retry_count INTEGER,
                 archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -650,9 +790,10 @@ class Database:
                     INSERT INTO matched_orders (
                         match_id, order_id, order_side, order_amount,
                         counterparty_name, wise_transfer_reference,
-                        wise_amount, wise_direction, matched_at, verification_source
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, match)
+                        wise_amount, wise_direction, matched_at, verification_source,
+                        verification_status, message_sent, message_sent_at, message_retry_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, tuple(match))
                 archived_count += 1
             except sqlite3.IntegrityError:
                 # Record already exists in archive, skip it
@@ -670,7 +811,6 @@ class Database:
         return archived_count
 
 
-
 # Example usage
 if __name__ == "__main__":
     # Initialize database
@@ -686,20 +826,23 @@ if __name__ == "__main__":
     )
     print(f"Added unverified order with ID: {match_id}")
 
-    # Example 2: Add verified match (when Wise transfer is confirmed)
-    match_id = db.add_match(
-        order_id="1992070819939557377",
-        order_side=OrderSide.SELL,
-        order_amount=500.00,
-        counterparty_name="Jane Smith",
-        wise_transfer_reference="TRANSFER-123456",
-        wise_amount=500.00,
-        wise_direction="CREDIT",
-        verification_source=VerificationSource.WISE_INCOMING
-    )
-    print(f"Added verified match with ID: {match_id}")
+    # Example 2: Mark order as messaged
+    db.mark_order_messaged("1992070819939557376", retry_count=0)
+    print(f"Marked order as messaged")
 
-    # Example 3: Update existing order to verified
+    # Example 3: Check if messaged
+    was_messaged = db.was_order_messaged("1992070819939557376")
+    print(f"Order was messaged: {was_messaged}")
+
+    # Example 4: Get unmessaged orders
+    unmessaged = db.get_unmessaged_orders(order_side=OrderSide.SELL)
+    print(f"Unmessaged SELL orders: {len(unmessaged)}")
+
+    # Example 5: Get messaging statistics
+    msg_stats = db.get_messaging_statistics()
+    print(f"Messaging stats: {msg_stats}")
+
+    # Example 6: Update to verified
     updated = db.update_order_verification(
         order_id="1992070819939557376",
         wise_transfer_reference="TRANSFER-789012",
@@ -708,17 +851,6 @@ if __name__ == "__main__":
         verification_source=VerificationSource.WISE_INCOMING
     )
     print(f"Updated order verification: {updated}")
-
-    # Check verification status
-    print(f"Order verified: {db.is_order_verified('1992070819939557376')}")
-
-    # Get unverified orders
-    unverified = db.get_unverified_orders()
-    print(f"Unverified orders: {len(unverified)}")
-
-    # Delete all unverified orders (daily cleanup)
-    deleted = db.delete_unverified_orders()
-    print(f"Deleted {deleted} unverified orders")
 
     # Get statistics
     stats = db.get_statistics()

@@ -589,29 +589,135 @@ async def get_chat_message(client: P2P):
 
 
 #TODO: Think of adding QR-code. Payment link doesn't work with USD via Wise API calls
-async def send_chat_message(client: P2P):
-    orders = await fetch_pending_sell_orders(client=client)
+# async def send_chat_message(client: P2P):
+#     orders = await fetch_pending_sell_orders(client=client)
+#
+#     if not orders:
+#         print("NO PENDING ORDERS FOUND")
+#         return
+#
+#     for order in orders:
+#         order_id = order["order_id"]
+#         print(f"Sending message to {order_id}")  #see if i need this line of code
+#         try:
+#             for msg in message:
+#                 await client.send_chat_message(
+#                     message=msg,
+#                     contentType="str",
+#                     orderId=order_id,
+#                     msgUuid=uuid.uuid4().hex,
+#                 )
+#                 await asyncio.sleep(0.5)
+#             await qr_upload(client=client)
+#             print(f"Message sequence sent for {order_id}")
+#         except Exception as e:
+#             send_telegram_message(f'{alert.get("bybit_msg")} for {order_id} -> {e}')
 
-    if not orders:
-        print("NO PENDING ORDERS FOUND")
+
+async def send_payment_instructions(client: P2P, db: Database):
+    """
+    Send payment instructions to new SELL orders that haven't been messaged yet.
+    Uses database to track messaging status - survives bot restarts.
+
+    Features:
+    - Automatic retry on failure (up to 3 attempts)
+    - Database tracking
+    - Detailed logging
+    - Error handling
+    - Prevents duplicate messages
+    """
+    sell_orders = await fetch_pending_sell_orders(client=client)
+
+    if not sell_orders:
         return
 
-    for order in orders:
+    print(f"\n📬 Checking {len(sell_orders)} pending SELL orders for messaging...")
+    messages_sent = 0
+
+    for order in sell_orders:
         order_id = order["order_id"]
-        print(f"Sending message to {order_id}")  #see if i need this line of code
-        try:
-            for msg in message:
-                await client.send_chat_message(
-                    message=msg,
-                    contentType="str",
-                    orderId=order_id,
-                    msgUuid=uuid.uuid4().hex,
+        buyer_name = order["name"]
+        amount = order["amount"]
+
+        # Check if order exists in database
+        existing_order = db.get_match_by_order_id(order_id)
+
+        if not existing_order:
+            # New order discovered - add to database
+            try:
+                db.add_order(
+                    order_id=order_id,
+                    order_side=OrderSide.SELL,
+                    order_amount=float(amount),
+                    counterparty_name=buyer_name,
+                    verification_status=VerificationStatus.NOT_VERIFIED
                 )
-                await asyncio.sleep(0.5)
-            await qr_upload(client=client)
-            print(f"Message sequence sent for {order_id}")
-        except Exception as e:
-            send_telegram_message(f'{alert.get("bybit_msg")} for {order_id} -> {e}')
+                print(f"📝 New order {order_id} added to database")
+            except Exception as e:
+                print(f"⚠️ Failed to add order {order_id} to database: {e}")
+                continue
+
+        # Check if message was already sent
+        if db.was_order_messaged(order_id):
+            continue  # Skip - already messaged
+
+        # Send payment instructions
+        print(f"\n📨 Sending payment instructions to order {order_id}")
+        print(f"   Buyer: {buyer_name} | Amount: ${amount}")
+
+        retry_count = 0
+        max_retries = 3
+        success = False
+
+        while retry_count < max_retries and not success:
+            try:
+                # Send each message in sequence
+                for msg in message:
+                    await client.send_chat_message(
+                        message=msg,
+                        contentType="str",
+                        orderId=order_id,
+                        msgUuid=uuid.uuid4().hex,
+                    )
+                    await asyncio.sleep(0.5)  # Rate limiting
+
+                # Optional: Upload QR code
+                qr_path = "qr.jpg"
+                await client.upload_chat_file(upload_file=qr_path, orderId=order_id)
+
+                success = True
+
+            except Exception as e:
+                retry_count += 1
+                print(f"   ❌ Attempt {retry_count} failed: {e}")
+
+                if retry_count < max_retries:
+                    print(f"   🔄 Retrying in 2 seconds...")
+                    await asyncio.sleep(2)
+                else:
+                    print(f"   ⛔ Max retries reached for order {order_id}")
+                    send_telegram_message(
+                        f'{alert.get("bybit_msg")} for {order_id} after {max_retries} attempts -> {e}'
+                    )
+
+        if success:
+            # Mark as messaged in database
+            db.mark_order_messaged(order_id, retry_count)
+            messages_sent += 1
+            print(f"   ✅ Payment instructions sent successfully (attempt {retry_count + 1})")
+
+            # Send confirmation to admin (optional - comment out if too noisy)
+            # send_telegram_message(
+            #     f"📨 Payment instructions sent\n"
+            #     f"Order: {order_id}\n"
+            #     f"Buyer: {buyer_name}\n"
+            #     f"Amount: ${amount}"
+            # )
+
+    if messages_sent > 0:
+        print(f"\n✅ Sent payment instructions to {messages_sent} new order(s)")
+    else:
+        print(f"✅ No new orders requiring messages")
 
 async def get_sell_order_id(client: P2P):
 
@@ -1304,12 +1410,14 @@ async def main():
 
         while True:
             try:
+
+                await send_payment_instructions(api, db)
+
                 current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
                 await ad_management(api, current_wise_usd)
 
                 await display_balance_and_transactions(wise_client, profile_id, "USD")
 
-                # Enhanced verification with Wise data and database
                 await verify_transfer(
                     client=api,
                     wise_client=wise_client,
