@@ -523,9 +523,9 @@ async def ad_management(client: P2P, wise_balance: float):
         )
         print("HARD SELL AD REMOVE EXECUTED")
 
-async def qr_upload(client: P2P):
-    qr = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
-    client.upload_chat_file(upload_file=qr)
+# async def qr_upload(client: P2P):
+#     qr = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
+#     await client.upload_chat_file(upload_file=qr)
 
 
 
@@ -581,7 +581,7 @@ async def release_assets(client: P2P):
 """TO BE REMOVED IN THE FUTURE"""
 async def get_chat_message(client: P2P):
     msg = await client.get_chat_messages(
-        orderId="1992070819939557376",
+        orderId="2002879935441309696",
         startMessageId=0,
         size=100
     )
@@ -707,12 +707,12 @@ async def send_payment_instructions(client: P2P, db: Database):
             print(f"   ✅ Payment instructions sent successfully (attempt {retry_count + 1})")
 
             # Send confirmation to admin (optional - comment out if too noisy)
-            # send_telegram_message(
-            #     f"📨 Payment instructions sent\n"
-            #     f"Order: {order_id}\n"
-            #     f"Buyer: {buyer_name}\n"
-            #     f"Amount: ${amount}"
-            # )
+            send_telegram_message(
+                f"📨 Payment instructions sent\n"
+                f"Order: {order_id}\n"
+                f"Buyer: {buyer_name}\n"
+                f"Amount: ${amount}"
+            )
 
     if messages_sent > 0:
         print(f"\n✅ Sent payment instructions to {messages_sent} new order(s)")
@@ -1344,6 +1344,10 @@ async def main():
     print("Fetch last 20 Pending buy orders:",
           await fetch_pending_buy_orders(client=api)
           )
+
+    # print(await api.qr_upload(client=api, upload_file="C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg", orderId='2002879935441309696'))
+
+    # print(await qr_upload(client=api))
 
     print("Chat message:",
           await get_chat_message(client=api)
