@@ -11,7 +11,7 @@ import httpx
 import csv
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from typing import TypedDict
+from typing import TypedDict, Optional, List, Dict
 from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
 from database import Database, VerificationSource, VerificationStatus
@@ -86,72 +86,218 @@ async def get_wise_balance_value(wise_client, profile_id, currency="USD") -> flo
             return float(b["amount"]["value"])
     return 0.0
 
-"""Think of removing/refactoring func() below, since it only suitable for representing purposes"""
-async def get_wise_balances(wise_client, profile_id):
-    """Fetch balances for business account."""
-    r = await wise_client.get(f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD")
-    r.raise_for_status()
-    return r.json()
 
-"""Original code:"""
-async def get_incoming_transfers_csv(wise_client, profile_id, account_id, currency):
-    """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
-    today = datetime.now(timezone.utc).date()  # timezone-aware UTC
+async def get_wise_balances(wise_client: httpx.AsyncClient, profile_id: str):
+    """Get Wise balances with timeout and error handling."""
+    try:
+        r = await wise_client.get(
+            f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD",
+            timeout=15.0  # Add explicit timeout
+        )
+        r.raise_for_status()
+        return r.json()
+    except httpx.TimeoutException:
+        print("⚠️ Wise balance request timed out")
+        from notifier import send_telegram_message
+        send_telegram_message("⚠️ Wise API timeout - balance check failed")
+        return []
+    except httpx.HTTPError as e:
+        print(f"❌ HTTP error getting Wise balances: {e}")
+        return []
+
+
+# ============================================
+# RETRY DECORATOR WITH EXPONENTIAL BACKOFF
+# ============================================
+
+async def retry_with_backoff(
+        func,
+        max_retries: int = 3,
+        initial_delay: float = 1.0,
+        max_delay: float = 30.0,
+        backoff_factor: float = 2.0,
+        exceptions=(httpx.HTTPError,)
+):
+    """
+    Retry a coroutine with exponential backoff.
+
+    Args:
+        func: Async function to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        max_delay: Maximum delay between retries
+        backoff_factor: Multiplier for delay on each retry
+        exceptions: Tuple of exceptions to catch
+    """
+    delay = initial_delay
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await func()
+        except exceptions as e:
+            if attempt == max_retries:
+                # Final attempt failed - re-raise the exception
+                raise
+
+            # Calculate next delay with exponential backoff
+            wait_time = min(delay, max_delay)
+            print(f"⚠️ Attempt {attempt + 1} failed: {e}")
+            print(f"   Retrying in {wait_time:.1f} seconds...")
+
+            await asyncio.sleep(wait_time)
+            delay *= backoff_factor
+
+    # Should never reach here, but just in case
+    raise RuntimeError("Retry logic failed unexpectedly")
+
+
+# ============================================
+# 2. WRAP WISE API CALLS WITH ERROR HANDLING
+# ============================================
+
+async def get_incoming_transfers_csv(
+        wise_client: httpx.AsyncClient,
+        profile_id: str,
+        account_id: str,
+        currency: str
+) -> List[Dict]:
+    """
+    Fetch CSV statement with proper error handling and retries.
+    Returns empty list on failure instead of crashing.
+    """
+    today = datetime.now(timezone.utc).date()
     start = f"{today}T00:00:00.000Z"
     end = f"{today}T23:59:59.999Z"
 
     url = (
-        f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
+        f"https://api.wise.com/v3/profiles/{profile_id}/"
+        f"borderless-accounts/{account_id}/statement.csv"
         f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
     )
 
-    response = await wise_client.get(url)
-    response.raise_for_status()
+    async def fetch():
+        response = await wise_client.get(url)
+        response.raise_for_status()
+        return response.text
 
-    csv_text = response.text
-    reader = csv.DictReader(StringIO(csv_text))
+    try:
+        # Retry the API call with exponential backoff
+        csv_text = await retry_with_backoff(
+            fetch,
+            max_retries=3,
+            initial_delay=2.0,
+            exceptions=(httpx.HTTPError,)
+        )
 
-    incoming = []
-    for row in reader:
-        if row.get("Transaction Type") == "CREDIT":
-            incoming.append({
-                "amount": float(row.get("Amount", 0)),
-                "name": row.get("Payer Name") or "Unknown",
-                "reference": row.get("TransferWise ID") or "No reference",
-                "time": row.get("Date Time")
-            })
+        # Parse CSV
+        reader = csv.DictReader(StringIO(csv_text))
+        incoming = []
 
-    return incoming
+        for row in reader:
+            if row.get("Transaction Type") == "CREDIT":
+                incoming.append({
+                    "amount": float(row.get("Amount", 0)),
+                    "name": row.get("Payer Name") or "Unknown",
+                    "reference": row.get("TransferWise ID") or "No reference",
+                    "time": row.get("Date Time")
+                })
+
+        return incoming
+
+    except httpx.HTTPStatusError as e:
+        # HTTP errors (4xx, 5xx)
+        print(f"❌ HTTP Error fetching Wise transfers: {e.response.status_code}")
+        print(f"   URL: {url}")
+        print(f"   Response: {e.response.text[:200]}")  # First 200 chars
+
+        # Send alert but DON'T crash
+        from notifier import send_telegram_message
+        send_telegram_message(
+            f"⚠️ Wise API Error\n"
+            f"Status: {e.response.status_code}\n"
+            f"Failed to fetch {currency} incoming transfers after 3 retries"
+        )
+        return []  # Return empty list instead of crashing
+
+    except httpx.RequestError as e:
+        # Network errors (connection failed, timeout, etc.)
+        print(f"❌ Network Error fetching Wise transfers: {e}")
+
+        from notifier import send_telegram_message
+        send_telegram_message(
+            f"⚠️ Wise Network Error\n"
+            f"Failed to connect to Wise API\n"
+            f"Error: {str(e)}"
+        )
+        return []
+
+    except Exception as e:
+        # Unexpected errors
+        print(f"❌ Unexpected error in get_incoming_transfers_csv: {e}")
+
+        from notifier import send_telegram_message
+        send_telegram_message(
+            f"⚠️ Wise Transfer Fetch Error\n"
+            f"Unexpected error: {str(e)}"
+        )
+        return []
 
 
-async def get_outgoing_transfers_csv(wise_client, profile_id, account_id, currency):
-    """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
-    today = datetime.now(timezone.utc).date()  # timezone-aware UTC
+async def get_outgoing_transfers_csv(
+        wise_client: httpx.AsyncClient,
+        profile_id: str,
+        account_id: str,
+        currency: str
+) -> List[Dict]:
+    """
+    Fetch outgoing transfers with error handling.
+    """
+    today = datetime.now(timezone.utc).date()
     start = f"{today}T00:00:00.000Z"
     end = f"{today}T23:59:59.999Z"
 
     url = (
-        f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
+        f"https://api.wise.com/v3/profiles/{profile_id}/"
+        f"borderless-accounts/{account_id}/statement.csv"
         f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
     )
 
-    response = await wise_client.get(url)
-    response.raise_for_status()
+    async def fetch():
+        response = await wise_client.get(url)
+        response.raise_for_status()
+        return response.text
 
-    csv_text = response.text
-    reader = csv.DictReader(StringIO(csv_text))
+    try:
+        csv_text = await retry_with_backoff(
+            fetch,
+            max_retries=3,
+            initial_delay=2.0,
+            exceptions=(httpx.HTTPError,)
+        )
 
-    outgoing = []
-    for row in reader:
-        if row.get("Transaction Type") == "DEBIT":
-            outgoing.append({
-                "amount": float(row.get("Amount", 0)),
-                "name": row.get("Payee Name") or "Unknown",
-                "reference": row.get("TransferWise ID") or "No reference",
-                "time" : row.get("Date Time")
-            })
+        reader = csv.DictReader(StringIO(csv_text))
+        outgoing = []
 
-    return outgoing
+        for row in reader:
+            if row.get("Transaction Type") == "DEBIT":
+                outgoing.append({
+                    "amount": float(row.get("Amount", 0)),
+                    "name": row.get("Payee Name") or "Unknown",
+                    "reference": row.get("TransferWise ID") or "No reference",
+                    "time": row.get("Date Time")
+                })
+
+        return outgoing
+
+    except (httpx.HTTPError, Exception) as e:
+        print(f"❌ Error fetching outgoing transfers: {e}")
+
+        from notifier import send_telegram_message
+        send_telegram_message(
+            f"⚠️ Wise Outgoing Transfer Fetch Failed\n"
+            f"Error: {str(e)}"
+        )
+        return []
 
 
 async def display_balance_and_transactions(wise_client, profile_id, currency="USD"):
@@ -1389,32 +1535,51 @@ async def main():
     ))
 
 
+    # Use proper timeout and limits for httpx
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
 
-    async with httpx.AsyncClient(headers=headers, timeout=30) as wise_client:
+    headers = {
+        "Authorization": f"Bearer {os.getenv('API_TOKEN')}",
+        "Content-Type": "application/json"
+    }
 
-        profiles = await get_profiles(wise_client)
+    async with httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            limits=limits
+    ) as wise_client:
+
+        # Get Wise profile
+        try:
+            profiles = await wise_client.get("https://api.wise.com/v2/profiles")
+            profiles.raise_for_status()
+            profiles_data = profiles.json()
+        except Exception as e:
+            print(f"❌ Failed to get Wise profiles: {e}")
+            return
 
         business_profile = None
-        for p in profiles:
-            print(f"Profile: {p['id']} | type={p['type']} | name={p.get('fullName')}")
+        for p in profiles_data:
             if p["type"] == "BUSINESS":
                 business_profile = p
                 break
 
         if not business_profile:
             print("❌ No business profile found")
-            send_telegram_message(alert.get("wise_profiles"))
-            raise
+            return
 
         profile_id = business_profile["id"]
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
-        print("🔁 Starting continuous verification loop...\n")
+        print("🔍 Starting continuous verification loop...\n")
 
         last_cleanup = datetime.now()
+        consecutive_errors = 0
+        max_consecutive_errors = 5
 
         while True:
             try:
-
+                # Your main logic here
                 await send_payment_instructions(api, db)
 
                 current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
@@ -1430,39 +1595,31 @@ async def main():
                     currency="USD"
                 )
 
-                # Display database statistics periodically
-                stats = db.get_statistics()
-                print(f"\n📊 Database Stats: {stats['total_matches']} total | "
-                      f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified | "
-                      f"{stats['fraud_orders']} fraud")
-                print(f"   Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
-
-                # Daily cleanup - delete unverified orders and archive old verified orders
-                if (datetime.now() - last_cleanup).days >= 1:
-                    print("\n🗑️ Running daily cleanup...")
-
-                    # Delete unverified orders
-                    unverified_count = len(db.get_unverified_orders())
-                    if unverified_count > 0:
-                        deleted = db.delete_unverified_orders()
-                        print(f"   🗑️ Deleted {deleted} unverified orders")
-                    else:
-                        print(f"   ✅ No unverified orders to delete")
-
-                    # Archive old verified orders (30+ days)
-                    old_count = db.get_old_matches_count(days=30)
-                    if old_count > 0:
-                        archived = db.archive_old_matches(days=30)
-                        print(f"   📦 Archived {archived} old verified orders")
-                    else:
-                        print(f"   ✅ No old orders to archive")
-
-                    last_cleanup = datetime.now()
-                    print(f"   ✅ Daily cleanup completed at {last_cleanup.strftime('%Y-%m-%d %H:%M:%S')}")
+                # Reset error counter on success
+                consecutive_errors = 0
 
             except Exception as e:
-                send_telegram_message(f'{alert.get("loop_error")}, {e})')
-                raise
+                consecutive_errors += 1
+                print(f"❌ Error in main loop (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+
+                from notifier import send_telegram_message
+                send_telegram_message(
+                    f"⚠️ Main Loop Error\n"
+                    f"Attempt {consecutive_errors}/{max_consecutive_errors}\n"
+                    f"Error: {str(e)}"
+                )
+
+                if consecutive_errors >= max_consecutive_errors:
+                    send_telegram_message(
+                        f"🛑 CRITICAL: Main loop failed {max_consecutive_errors} times in a row\n"
+                        f"Bot stopping to prevent infinite error loop"
+                    )
+                    raise  # Stop the bot
+
+                # Wait longer before retrying after an error
+                await asyncio.sleep(60)
+                continue
+
             await asyncio.sleep(30)
 
 
