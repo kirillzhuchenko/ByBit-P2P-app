@@ -951,7 +951,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                         send_telegram_message(
                             f"{alert.get('verification')} {order_id} with match score {match_score:.2%}.")
                         break
-                    else:
+                    elif match_score < 0.8:
                         matching_transfer = transfer
                         send_telegram_message(
                             f"{alert.get('verify_reject')} {order_id} with match score {match_score:.2%}.")
@@ -1083,7 +1083,7 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                 if not existing_order or existing_order['verification_status'] == VerificationStatus.NOT_VERIFIED:
                     send_telegram_message(
                         f"⚠️ SELL Order {order_id} marked PAID but no Wise transfer found!\n"
-                        f"Expected: ${amount} from {buyer_name} name match score:"
+                        f"Expected: ${amount} from {buyer_name}"
                     )
 
 
