@@ -16,6 +16,7 @@ from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
 from database import Database, VerificationSource, VerificationStatus
 from names import names_match
+from breaker import CircuitBreaker, CircuitBreakerOpenError, print_circuit_breaker_dashboard
 
 
 #=====================
@@ -63,6 +64,39 @@ message = [
 ]
 
 #=====================
+#       Breakers
+#=====================
+
+# Create circuit breakers for each external service
+wise_transfers_breaker = CircuitBreaker(
+    max_failures=5,           # Open after 5 failures
+    timeout=120.0,            # Wait 2 minutes before retry
+    name="Wise Transfers",
+    alert_callback=send_telegram_message  # Your existing alert function
+)
+
+wise_balance_breaker = CircuitBreaker(
+    max_failures=3,
+    timeout=60.0,             # Wait 1 minute before retry
+    name="Wise Balance",
+    alert_callback=send_telegram_message
+)
+
+bybit_orders_breaker = CircuitBreaker(
+    max_failures=5,
+    timeout=90.0,             # Wait 1.5 minutes before retry
+    name="ByBit Orders",
+    alert_callback=send_telegram_message
+)
+
+bybit_balance_breaker = CircuitBreaker(
+    max_failures=3,
+    timeout=60.0,
+    name="ByBit Balance",
+    alert_callback=send_telegram_message
+)
+
+#=====================
 #    WISE Cluster
 #=====================
 
@@ -86,72 +120,99 @@ async def get_wise_balance_value(wise_client, profile_id, currency="USD") -> flo
             return float(b["amount"]["value"])
     return 0.0
 
-"""Think of removing/refactoring func() below, since it only suitable for representing purposes"""
+
 async def get_wise_balances(wise_client, profile_id):
-    """Fetch balances for business account."""
-    r = await wise_client.get(f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD")
-    r.raise_for_status()
-    return r.json()
+    """Fetch balances with circuit breaker protection."""
 
-"""Original code:"""
+    async def fetch():
+        r = await wise_client.get(f"{base_url}/v4/profiles/{profile_id}/balances?types=STANDARD")
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        return await wise_balance_breaker.call(fetch)
+    except (CircuitBreakerOpenError, Exception) as e:
+        print(f"⚠️ Failed to get Wise balances: {e}")
+        return []
+
+
 async def get_incoming_transfers_csv(wise_client, profile_id, account_id, currency):
-    """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
-    today = datetime.now(timezone.utc).date()  # timezone-aware UTC
-    start = f"{today}T00:00:00.000Z"
-    end = f"{today}T23:59:59.999Z"
+    """
+    Fetch incoming transfers with circuit breaker protection.
+    Returns empty list if circuit is open or API fails.
+    """
 
-    url = (
-        f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
-        f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
-    )
+    async def fetch():
+        today = datetime.now(timezone.utc).date()
+        start = f"{today}T00:00:00.000Z"
+        end = f"{today}T23:59:59.999Z"
 
-    response = await wise_client.get(url)
-    response.raise_for_status()
+        url = (
+            f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
+            f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
+        )
 
-    csv_text = response.text
-    reader = csv.DictReader(StringIO(csv_text))
+        response = await wise_client.get(url)
+        response.raise_for_status()
 
-    incoming = []
-    for row in reader:
-        if row.get("Transaction Type") == "CREDIT":
-            incoming.append({
-                "amount": float(row.get("Amount", 0)),
-                "name": row.get("Payer Name") or "Unknown",
-                "reference": row.get("TransferWise ID") or "No reference",
-                "time": row.get("Date Time")
-            })
+        csv_text = response.text
+        reader = csv.DictReader(StringIO(csv_text))
 
-    return incoming
+        incoming = []
+        for row in reader:
+            if row.get("Transaction Type") == "CREDIT":
+                incoming.append({
+                    "amount": float(row.get("Amount", 0)),
+                    "name": row.get("Payer Name") or "Unknown",
+                    "reference": row.get("TransferWise ID") or "No reference",
+                    "time": row.get("Date Time")
+                })
+
+        return incoming
+
+    try:
+        return await wise_transfers_breaker.call(fetch)
+    except (CircuitBreakerOpenError, Exception) as e:
+        print(f"⚠️ Failed to get incoming transfers: {e}")
+        return []  # Return empty list instead of crashing
 
 
 async def get_outgoing_transfers_csv(wise_client, profile_id, account_id, currency):
-    """Fetch CSV statement for today and extract incoming (CREDIT) transfers."""
-    today = datetime.now(timezone.utc).date()  # timezone-aware UTC
-    start = f"{today}T00:00:00.000Z"
-    end = f"{today}T23:59:59.999Z"
+    """Fetch outgoing transfers with circuit breaker protection."""
 
-    url = (
-        f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
-        f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
-    )
+    async def fetch():
+        today = datetime.now(timezone.utc).date()
+        start = f"{today}T00:00:00.000Z"
+        end = f"{today}T23:59:59.999Z"
 
-    response = await wise_client.get(url)
-    response.raise_for_status()
+        url = (
+            f"{base_url}/v3/profiles/{profile_id}/borderless-accounts/{account_id}/statement.csv"
+            f"?currency={currency}&intervalStart={start}&intervalEnd={end}&type=COMPACT"
+        )
 
-    csv_text = response.text
-    reader = csv.DictReader(StringIO(csv_text))
+        response = await wise_client.get(url)
+        response.raise_for_status()
 
-    outgoing = []
-    for row in reader:
-        if row.get("Transaction Type") == "DEBIT":
-            outgoing.append({
-                "amount": float(row.get("Amount", 0)),
-                "name": row.get("Payee Name") or "Unknown",
-                "reference": row.get("TransferWise ID") or "No reference",
-                "time" : row.get("Date Time")
-            })
+        csv_text = response.text
+        reader = csv.DictReader(StringIO(csv_text))
 
-    return outgoing
+        outgoing = []
+        for row in reader:
+            if row.get("Transaction Type") == "DEBIT":
+                outgoing.append({
+                    "amount": float(row.get("Amount", 0)),
+                    "name": row.get("Payee Name") or "Unknown",
+                    "reference": row.get("TransferWise ID") or "No reference",
+                    "time": row.get("Date Time")
+                })
+
+        return outgoing
+
+    try:
+        return await wise_transfers_breaker.call(fetch)
+    except (CircuitBreakerOpenError, Exception) as e:
+        print(f"⚠️ Failed to get outgoing transfers: {e}")
+        return []
 
 
 async def display_balance_and_transactions(wise_client, profile_id, currency="USD"):
@@ -193,18 +254,23 @@ async def display_balance_and_transactions(wise_client, profile_id, currency="US
 #=====================
 
 async def get_bybit_balance(client: P2P):
-    # [0] - represents place in a dict. Due to 'coin="USDT"', response contains USDT only
-    try:
+    """Get ByBit balance with circuit breaker protection."""
+
+    async def fetch():
         current_balance = await client.get_current_balance(
             accountType="FUND",
             coin="USDT"
         )
-        present_balance = current_balance["result"]["balance"][0]["transferBalance"]
-        return present_balance
+        return current_balance["result"]["balance"][0]["transferBalance"]
 
+    try:
+        return await bybit_balance_breaker.call(fetch)
+    except CircuitBreakerOpenError as e:
+        print(f"⚠️ ByBit balance check blocked: {e}")
+        return "0.0"  # Return safe default
     except Exception as e:
         send_telegram_message(f'{alert.get("bybit_balance")} -> {e})')
-        raise
+        return "0.0"
 
 
 """Remove next 2 func below once all set"""
@@ -215,9 +281,6 @@ async def fetch_wise_buy_ad_details(client: P2P):
 async def fetch_wise_sell_ad_details(client: P2P):
     wise_sell_ad = await client.get_ad_details(itemId="1989351720308887552")
     return wise_sell_ad
-
-
-
 
 """Ad config section"""
 
@@ -792,23 +855,37 @@ async def get_order_details_generic(client: P2P, orders_list: list):
 
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_sell_order_details(client: P2P):
-    orders_list = await get_sell_order_id(client=client)
+    """Get sell order details with circuit breaker protection."""
 
-    if not orders_list:
-        print("NO PENDING SELL ORDERS FOUND")
+    async def fetch():
+        orders_list = await get_sell_order_id(client=client)
+        if not orders_list:
+            print("NO PENDING SELL ORDERS FOUND")
+            return []
+        return await get_order_details_generic(client, orders_list)
+
+    try:
+        return await bybit_orders_breaker.call(fetch)
+    except (CircuitBreakerOpenError, Exception) as e:
+        print(f"⚠️ Failed to get sell orders: {e}")
         return []
-
-    return await get_order_details_generic(client, orders_list)
 
 """paymentType is 0 when the order is open. It's getting the correct paymentType (78) whenever its marked as paid"""
 async def get_pending_buy_order_details(client: P2P):
-    orders_list = await get_buy_order_id(client=client)
+    """Get buy order details with circuit breaker protection."""
 
-    if not orders_list:
-        print("NO PENDING BUY ORDERS FOUND")
+    async def fetch():
+        orders_list = await get_buy_order_id(client=client)
+        if not orders_list:
+            print("NO PENDING BUY ORDERS FOUND")
+            return []
+        return await get_order_details_generic(client, orders_list)
+
+    try:
+        return await bybit_orders_breaker.call(fetch)
+    except (CircuitBreakerOpenError, Exception) as e:
+        print(f"⚠️ Failed to get buy orders: {e}")
         return []
-
-    return await get_order_details_generic(client, orders_list)
 
 
 async def verify_transfer(client: P2P, wise_client, profile_id: str, db: Database, currency: str = "USD") -> None:
@@ -1388,9 +1465,11 @@ async def main():
         orderId="1992070819939557376"
     ))
 
+    # Add timeout and connection limits to prevent resource leaks
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
 
-
-    async with httpx.AsyncClient(headers=headers, timeout=30) as wise_client:
+    async with httpx.AsyncClient(headers=headers, timeout=timeout, limits=limits) as wise_client:
 
         profiles = await get_profiles(wise_client)
 
@@ -1408,13 +1487,23 @@ async def main():
 
         profile_id = business_profile["id"]
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
-        print("🔁 Starting continuous verification loop...\n")
+        print("🔍 Starting continuous verification loop...\n")
 
         last_cleanup = datetime.now()
+        consecutive_errors = 0
+        max_consecutive_errors = 5
 
         while True:
             try:
+                # === DISPLAY CIRCUIT BREAKER DASHBOARD ===
+                print_circuit_breaker_dashboard([
+                    wise_transfers_breaker,
+                    wise_balance_breaker,
+                    bybit_orders_breaker,
+                    bybit_balance_breaker
+                ])
 
+                # === YOUR EXISTING LOGIC (now protected) ===
                 await send_payment_instructions(api, db)
 
                 current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
@@ -1430,39 +1519,56 @@ async def main():
                     currency="USD"
                 )
 
-                # Display database statistics periodically
+                # Display database statistics
                 stats = db.get_statistics()
                 print(f"\n📊 Database Stats: {stats['total_matches']} total | "
                       f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified | "
                       f"{stats['fraud_orders']} fraud")
                 print(f"   Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
 
-                # Daily cleanup - delete unverified orders and archive old verified orders
+                # Daily cleanup
                 if (datetime.now() - last_cleanup).days >= 1:
                     print("\n🗑️ Running daily cleanup...")
 
-                    # Delete unverified orders
                     unverified_count = len(db.get_unverified_orders())
                     if unverified_count > 0:
                         deleted = db.delete_unverified_orders()
                         print(f"   🗑️ Deleted {deleted} unverified orders")
-                    else:
-                        print(f"   ✅ No unverified orders to delete")
 
-                    # Archive old verified orders (30+ days)
                     old_count = db.get_old_matches_count(days=30)
                     if old_count > 0:
                         archived = db.archive_old_matches(days=30)
                         print(f"   📦 Archived {archived} old verified orders")
-                    else:
-                        print(f"   ✅ No old orders to archive")
 
                     last_cleanup = datetime.now()
-                    print(f"   ✅ Daily cleanup completed at {last_cleanup.strftime('%Y-%m-%d %H:%M:%S')}")
+
+                # Reset error counter on successful iteration
+                consecutive_errors = 0
 
             except Exception as e:
-                send_telegram_message(f'{alert.get("loop_error")}, {e})')
-                raise
+                consecutive_errors += 1
+                print(f"\n❌ Error in main loop (attempt {consecutive_errors}/{max_consecutive_errors})")
+                print(f"   Error: {e}")
+
+                send_telegram_message(
+                    f"⚠️ Main Loop Error (attempt {consecutive_errors}/{max_consecutive_errors})\n"
+                    f"Error: {str(e)}"
+                )
+
+                if consecutive_errors >= max_consecutive_errors:
+                    send_telegram_message(
+                        f"🛑 CRITICAL ERROR\n"
+                        f"Main loop failed {max_consecutive_errors} times consecutively\n"
+                        f"Bot stopping to prevent infinite error loop"
+                    )
+                    raise
+
+                # Wait longer after error
+                print(f"⏳ Waiting 60 seconds before retry...\n")
+                await asyncio.sleep(60)
+                continue
+
+            # Normal delay between iterations
             await asyncio.sleep(30)
 
 
