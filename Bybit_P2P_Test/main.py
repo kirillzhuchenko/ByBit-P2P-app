@@ -96,6 +96,9 @@ bybit_balance_breaker = CircuitBreaker(
     alert_callback=send_telegram_message
 )
 
+# Track orders being processed to prevent duplicate handlers (used in send_chat_msg)
+active_order_handlers: set[str] = set()
+
 #=====================
 #    WISE Cluster
 #=====================
@@ -703,25 +706,226 @@ async def get_chat_message(client: P2P):
 #             send_telegram_message(f'{alert.get("bybit_msg")} for {order_id} -> {e}')
 
 
+async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_name: str, amount: str) -> bool:
+    """
+    Send payment instructions immediately to a specific order.
+    Returns True if successful, False otherwise.
+
+    This is the actual message sending function called by the race condition handler.
+    """
+    print(f"\nð[Order {order_id}]    Sending payment instructions NOW ")
+    print(f"   Buyer: {buyer_name} | Amount: ${amount}")
+
+    retry_count = 0
+    max_retries = 3
+    success = False
+
+    while retry_count < max_retries and not success:
+        try:
+            # Send each message in sequence
+            for msg in message:
+                await client.send_chat_message(
+                    message=msg,
+                    contentType="str",
+                    orderId=order_id,
+                    msgUuid=uuid.uuid4().hex,
+                )
+                await asyncio.sleep(0.5)  # Rate limiting
+
+            # Optional: Upload QR code
+            try:
+                qr_path = "qr.jpg"
+                if os.path.exists(qr_path):
+                    await client.upload_chat_file(upload_file=qr_path, orderId=order_id)
+            except Exception as qr_error:
+                print(f" QR upload failed (non-critical): {qr_error}")
+
+            success = True
+
+        except Exception as e:
+            retry_count += 1
+            print(f"  Attempt {retry_count} failed: {e}")
+
+            if retry_count < max_retries:
+                print(f" Retrying in 2 seconds...  ")
+                await asyncio.sleep(2)
+            else:
+                print(f"   Max retries reached for order {order_id}")
+            send_telegram_message(
+            f'{alert.get("bybit_msg")} for {order_id} after {max_retries} attempts -> {e}'
+            )
+
+    if success:
+        print(f"   âœ… Payment instructions sent successfully (attempt {retry_count + 1})")
+
+        # Send confirmation to admin
+        send_telegram_message(
+            f" Payment instructions sent\n "
+            f"Order: {order_id}\n"
+            f"Buyer: {buyer_name}\n"
+            f"Amount: ${amount}"
+        )
+
+    return success
+
+
+async def check_for_new_message(client: P2P, order_id: str) -> bool:
+    """
+    Poll for new messages from the buyer.
+    Returns True when a new message is detected.
+
+    This continuously checks the chat for new buyer messages.
+    """
+    print(f"[Order {order_id}] ðŸ'€ Monitoring chat for buyer messages...")
+
+    # Get initial message count
+    try:
+        initial_messages = await client.get_chat_messages(
+            orderId=order_id,
+            size=100
+        )
+        initial_count = len(initial_messages.get("result", {}).get("result", []))
+    except Exception as e:
+        print(f"[Order {order_id}] âš ï¸ Failed to get initial messages: {e}")
+        initial_count = 0
+
+    # Poll for new messages every 3 seconds
+    while True:
+        await asyncio.sleep(3)  # Check every 3 seconds
+
+        try:
+            current_messages = await client.get_chat_messages(
+                orderId=order_id,
+                size=100
+            )
+            current_count = len(current_messages.get("result", {}).get("result", []))
+
+            # New message detected
+            if current_count > initial_count:
+                messages_list = current_messages.get("result", {}).get("result", [])
+                # Check if the latest message is from the buyer (not from us)
+                if messages_list:
+                    latest_msg = messages_list[-1]
+                    # Assuming messages from buyer have a different sender ID
+                    # Adjust this logic based on your actual message structure
+                    print(f"[Order {order_id}] New message detected from buyer!")
+                    return True
+
+        except Exception as e:
+            print(f"[Order {order_id}] âš ï¸ Error checking messages: {e}")
+            # Continue polling even if there's an error
+            continue
+
+
+async def wait_for_message(client: P2P, order_id: str) -> str:
+    """
+    Wait for a buyer message.
+    Returns "message" when detected.
+    """
+    await check_for_new_message(client, order_id)
+    return "message"
+
+
+async def wait_for_timeout(order_id: str, seconds: int = 60) -> str:
+    """
+    Wait for the specified timeout period.
+    Returns "timeout" when timer expires.
+    """
+    print(f"[Order {order_id}] ⏱️  Starting {seconds}-second timer...")
+    await asyncio.sleep(seconds)
+    print(f"[Order {order_id}] ⏰ Timer expired!")
+    return "timeout"
+
+
+async def handle_order_logic(client: P2P, db: Database, order_id: str, buyer_name: str, amount: str) -> None:
+    """
+    Race condition handler for a single order.
+
+    Waits for EITHER:
+    - Event A: Buyer sends a chat message
+    - Event B: 60-second timer expires
+
+    Whichever happens first triggers send_payment_instructions().
+    The other event is cancelled immediately.
+    """
+
+    # Idempotency check: Prevent duplicate handlers
+    if order_id in active_order_handlers:
+        print(f"[Order {order_id}] âš ï¸ Handler already running, skipping...")
+        return
+
+    # Idempotency check: Already messaged
+    if order_id in db.was_order_messaged(order_id):
+        print(f"[Order {order_id}] âœ… Already messaged, skipping...")
+        return
+
+    # Mark as active
+    active_order_handlers.add(order_id)
+
+    try:
+        print(f"\n[Order {order_id}] ðŸš€ Starting race condition handler...")
+        print(f"   Buyer: {buyer_name} | Amount: ${amount}")
+
+        # Create two competing tasks
+        message_task = asyncio.create_task(wait_for_message(client, order_id))
+        timeout_task = asyncio.create_task(wait_for_timeout(order_id, seconds=60))
+
+        # Race condition: Wait for the first task to complete
+        done, pending = await asyncio.wait(
+            {message_task, timeout_task},
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel all pending tasks immediately
+        for task in pending:
+            task.cancel()
+            try:
+                await task  # Wait for cancellation to complete
+            except asyncio.CancelledError:
+                pass  # Expected when cancelling
+
+        # Determine which event won the race
+        winner_task = done.pop()
+        result = winner_task.result()
+
+        if result == "message":
+            print(f"[Order {order_id}] ðŸ† Winner: BUYER MESSAGE (buyer sent a message first)")
+        else:
+            print(f"[Order {order_id}] ðŸ† Winner: TIMEOUT (60 seconds elapsed)")
+
+        # Send payment instructions (idempotency ensured)
+        success = await send_payment_instructions_immediate(client, order_id, buyer_name, amount)
+
+        if success:
+            # Mark order as messaged in database
+            db.mark_order_messaged(order_id, retry_count=0)
+            print(f"[Order {order_id}] âœ ï¸ Order handling completed!\n ")
+
+    except Exception as e:
+        print(f"[Order {order_id}] âŒ Error in race condition handler: {e}")
+        send_telegram_message(f"âš ï¸ Race condition error for order {order_id}: {e}")
+
+    finally:
+        # Remove from active handlers
+        active_order_handlers.discard(order_id)
+
+
 async def send_payment_instructions(client: P2P, db: Database):
     """
-    Send payment instructions to new SELL orders that haven't been messaged yet.
-    Uses database to track messaging status - survives bot restarts.
+    Check for new SELL orders and launch race condition handlers.
 
-    Features:
-    - Automatic retry on failure (up to 3 attempts)
-    - Database tracking
-    - Detailed logging
-    - Error handling
-    - Prevents duplicate messages
+    This is called in the main loop every 30 seconds.
+    For each new order, it launches a background task that:
+    1. Waits for buyer message OR 60-second timeout
+    2. Sends payment instructions when either condition is met
     """
     sell_orders = await fetch_pending_sell_orders(client=client)
 
     if not sell_orders:
         return
 
-    print(f"\n📬 Checking {len(sell_orders)} pending SELL orders for messaging...")
-    messages_sent = 0
+    print(f"\nðŸ Checking {len(sell_orders)} pending SELL orders for race condition handlers...")
+    handlers_launched = 0
 
     for order in sell_orders:
         order_id = order["order_id"]
@@ -732,7 +936,7 @@ async def send_payment_instructions(client: P2P, db: Database):
         existing_order = db.get_match_by_order_id(order_id)
 
         if not existing_order:
-            # New order discovered - add to database
+        # New order discovered - add to database
             try:
                 db.add_order(
                     order_id=order_id,
@@ -741,72 +945,42 @@ async def send_payment_instructions(client: P2P, db: Database):
                     counterparty_name=buyer_name,
                     verification_status=VerificationStatus.NOT_VERIFIED
                 )
-                print(f"📝 New order {order_id} added to database")
+                print(f"ðŸ New order {order_id} added to database")
+
+                # Send alert about new order
+                send_telegram_message(f'{alert.get("add_order")} Order #{order_id}')
+
             except Exception as e:
-                print(f"⚠️ Failed to add order {order_id} to database: {e}")
+                print(f"âš ï¸ Failed to add order {order_id} to database: {e}")
                 continue
 
-        # Check if message was already sent
+                # Check if message was already sent
         if db.was_order_messaged(order_id):
             continue  # Skip - already messaged
 
-        # Send payment instructions
-        print(f"\n📨 Sending payment instructions to order {order_id}")
-        print(f"   Buyer: {buyer_name} | Amount: ${amount}")
+            # Check if handler is already running
+        if order_id in active_order_handlers:
+            continue  # Skip - handler already active
 
-        retry_count = 0
-        max_retries = 3
-        success = False
-
-        while retry_count < max_retries and not success:
-            try:
-                # Send each message in sequence
-                for msg in message:
-                    await client.send_chat_message(
-                        message=msg,
-                        contentType="str",
-                        orderId=order_id,
-                        msgUuid=uuid.uuid4().hex,
-                    )
-                    await asyncio.sleep(0.5)  # Rate limiting
-
-                # Optional: Upload QR code
-                qr_path = "qr.jpg"
-                await client.upload_chat_file(upload_file=qr_path, orderId=order_id)
-
-                success = True
-
-            except Exception as e:
-                retry_count += 1
-                print(f"   ❌ Attempt {retry_count} failed: {e}")
-
-                if retry_count < max_retries:
-                    print(f"   🔄 Retrying in 2 seconds...")
-                    await asyncio.sleep(2)
-                else:
-                    print(f"   ⛔ Max retries reached for order {order_id}")
-                    send_telegram_message(
-                        f'{alert.get("bybit_msg")} for {order_id} after {max_retries} attempts -> {e}'
-                    )
-
-        if success:
-            # Mark as messaged in database
-            db.mark_order_messaged(order_id, retry_count)
-            messages_sent += 1
-            print(f"   ✅ Payment instructions sent successfully (attempt {retry_count + 1})")
-
-            # Send confirmation to admin (optional - comment out if too noisy)
-            send_telegram_message(
-                f"📨 Payment instructions sent\n"
-                f"Order: {order_id}\n"
-                f"Buyer: {buyer_name}\n"
-                f"Amount: ${amount}"
+            # Launch background race condition handler (NON-BLOCKING)
+        print(f"Launching race condition handler for order {order_id}")
+        asyncio.create_task(
+            handle_order_logic(
+                client=client,
+                db=db,
+                order_id=order_id,
+                buyer_name=buyer_name,
+                amount=amount
             )
+        )
+        handlers_launched += 1
 
-    if messages_sent > 0:
-        print(f"\n✅ Sent payment instructions to {messages_sent} new order(s)")
+
+    if handlers_launched > 0:
+        print(f"Launched {handlers_launched} race condition handler(s)")
     else:
-        print(f"✅ No new orders requiring messages")
+        print(f"No new orders requiring handlers")
+
 
 async def get_sell_order_id(client: P2P):
 
