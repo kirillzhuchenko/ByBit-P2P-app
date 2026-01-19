@@ -217,7 +217,7 @@ async def get_outgoing_transfers_csv(wise_client, profile_id, account_id, curren
         print(f"⚠️ Failed to get outgoing transfers: {e}")
         return []
 
-
+"""Shadow the function below. It's only good for representation purposes"""
 async def display_balance_and_transactions(wise_client, profile_id, currency="USD"):
     balances = await get_wise_balances(wise_client, profile_id)
 
@@ -713,7 +713,7 @@ async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_
 
     This is the actual message sending function called by the race condition handler.
     """
-    print(f"\nð[Order {order_id}]    Sending payment instructions NOW ")
+    print(f"\n [Order {order_id}]    Sending payment instructions NOW ")
     print(f"   Buyer: {buyer_name} | Amount: ${amount}")
 
     retry_count = 0
@@ -756,7 +756,7 @@ async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_
             )
 
     if success:
-        print(f"   âœ… Payment instructions sent successfully (attempt {retry_count + 1})")
+        print(f"  Payment instructions sent successfully (attempt {retry_count + 1})")
 
         # Send confirmation to admin
         send_telegram_message(
@@ -787,6 +787,7 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
         initial_count = len(initial_messages.get("result", {}).get("result", []))
     except Exception as e:
         print(f"[Order {order_id}] ⚠️ Failed to get initial messages: {e}")
+        send_telegram_message(f"[Order {order_id}] ⚠️ Failed to get initial messages: {e}")
         initial_count = 0
 
     # Poll for new messages every 3 seconds
@@ -804,12 +805,15 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
             if current_count > initial_count:
                 messages_list = current_messages.get("result", {}).get("result", [])
                 # Check if the latest message is from the buyer (not from us)
-                if messages_list:
-                    latest_msg = messages_list[-1]
-                    # Assuming messages from buyer have a different sender ID
-                    # Adjust this logic based on your actual message structure
-                    print(f"[Order {order_id}] New message detected from buyer!")
-                    return True
+                print(f"[Order {order_id}] New message detected from buyer!")
+                send_telegram_message(f"[Order {order_id}] New message detected from buyer!")
+                return True
+                # if messages_list:
+                #     latest_msg = messages_list[-1]
+                #     # Assuming messages from buyer have a different sender ID
+                #     # Adjust this logic based on your actual message structure
+                #     print(f"[Order {order_id}] New message detected from buyer!")
+                #     return True
 
         except asyncio.CancelledError:
             # Task was cancelled (timeout won the race)
@@ -817,6 +821,7 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
             print(f"[Order {order_id}] ⚠️ Error checking messages: {e}")
+            send_telegram_message(f"[Order {order_id}] ⚠️ Error checking new messages: {e}")
             # Continue polling even if there's an error
 
 
@@ -854,19 +859,19 @@ async def handle_order_logic(client: P2P, db: Database, order_id: str, buyer_nam
 
     # Idempotency check: Prevent duplicate handlers
     if order_id in active_order_handlers:
-        print(f"[Order {order_id}] âš ï¸ Handler already running, skipping...")
+        print(f"[Order {order_id}] Handler already running, skipping...")
         return
 
     # Idempotency check: Already messaged
     if order_id in db.was_order_messaged(order_id):
-        print(f"[Order {order_id}] âœ… Already messaged, skipping...")
+        print(f"[Order {order_id}] Already messaged, skipping...")
         return
 
     # Mark as active
     active_order_handlers.add(order_id)
 
     try:
-        print(f"\n[Order {order_id}] ðŸš€ Starting race condition handler...")
+        print(f"\n[Order {order_id}] Starting race condition handler...")
         print(f"   Buyer: {buyer_name} | Amount: ${amount}")
 
         # Create two competing tasks
@@ -892,9 +897,9 @@ async def handle_order_logic(client: P2P, db: Database, order_id: str, buyer_nam
         result = winner_task.result()
 
         if result == "message":
-            print(f"[Order {order_id}] ðŸ† Winner: BUYER MESSAGE (buyer sent a message first)")
+            print(f"[Order {order_id}] Winner: BUYER MESSAGE (buyer sent a message first)")
         else:
-            print(f"[Order {order_id}] ðŸ† Winner: TIMEOUT (60 seconds elapsed)")
+            print(f"[Order {order_id}] Winner: TIMEOUT (60 seconds elapsed)")
 
         # Send payment instructions (idempotency ensured)
         success = await send_payment_instructions_immediate(client, order_id, buyer_name, amount)
@@ -927,7 +932,7 @@ async def send_payment_instructions(client: P2P, db: Database):
     if not sell_orders:
         return
 
-    print(f"\nðŸ Checking {len(sell_orders)} pending SELL orders for race condition handlers...")
+    print(f" Checking {len(sell_orders)} pending SELL orders for race condition handlers...")
     handlers_launched = 0
 
     for order in sell_orders:
@@ -948,20 +953,21 @@ async def send_payment_instructions(client: P2P, db: Database):
                     counterparty_name=buyer_name,
                     verification_status=VerificationStatus.NOT_VERIFIED
                 )
-                print(f"ðŸ New order {order_id} added to database")
+                print(f"New order {order_id} added to database")
 
                 # Send alert about new order
                 send_telegram_message(f'{alert.get("add_order")} Order #{order_id}')
 
             except Exception as e:
-                print(f"âš ï¸ Failed to add order {order_id} to database: {e}")
+                print(f" Failed to add order {order_id} to database: {e}")
+                send_telegram_message(f" Failed to add order {order_id} to database: {e}")
                 continue
 
-                # Check if message was already sent
+        # Check if message was already sent
         if db.was_order_messaged(order_id):
             continue  # Skip - already messaged
 
-            # Check if handler is already running
+        # Check if handler is already running
         if order_id in active_order_handlers:
             continue  # Skip - handler already active
 
@@ -1103,38 +1109,41 @@ async def verify_transfer(client: P2P, wise_client, profile_id: str, db: Databas
     buy_orders = await get_pending_buy_order_details(client=client)
 
     # Get Wise balance and account ID for transfers
-    balances = await get_wise_balances(wise_client, profile_id)
-    account = None
-    for b in balances:
-        if b["currency"] == currency:
-            account = b
-            break
+    if sell_orders or buy_orders:
+        balances = await get_wise_balances(wise_client, profile_id)
+        account = None
+        for b in balances:
+            if b["currency"] == currency:
+                account = b
+                break
 
-    if not account:
-        print(f"❌ No {currency} balance found on Wise")
-        return
+        if not account:
+            print(f"❌ No {currency} balance found on Wise")
+            return
 
-    # Fetch incoming and outgoing transfers from Wise
-    incoming_transfers = await get_incoming_transfers_csv(
-        wise_client, profile_id, account["id"], currency
-    )
-    outgoing_transfers = await get_outgoing_transfers_csv(
-        wise_client, profile_id, account["id"], currency
-    )
+        # Fetch incoming and outgoing transfers from Wise
+        incoming_transfers = await get_incoming_transfers_csv(
+            wise_client, profile_id, account["id"], currency
+        )
+        outgoing_transfers = await get_outgoing_transfers_csv(
+            wise_client, profile_id, account["id"], currency
+        )
 
-    print("\n" + "=" * 60)
-    print("TRANSFER VERIFICATION STARTING")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("TRANSFER VERIFICATION STARTING")
+        print("=" * 60)
 
-    # Process SELL orders (we expect incoming payments to Wise)
-    _process_sell_orders(sell_orders, incoming_transfers, db)
+        # Process SELL orders (we expect incoming payments to Wise)
+        _process_sell_orders(sell_orders, incoming_transfers, db)
 
-    # Process BUY orders (we expect outgoing payments from Wise)
-    _process_buy_orders(buy_orders, outgoing_transfers, db)
+        # Process BUY orders (we expect outgoing payments from Wise)
+        _process_buy_orders(buy_orders, outgoing_transfers, db)
 
-    print("=" * 60)
-    print("TRANSFER VERIFICATION COMPLETE")
-    print("=" * 60 + "\n")
+        print("=" * 60)
+        print("TRANSFER VERIFICATION COMPLETE")
+        print("=" * 60 + "\n")
+    else:
+        print("NO ORDERS TO VERIFY")
 
 
 def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Database) -> None:
@@ -1706,12 +1715,12 @@ async def main():
                     bybit_balance_breaker
                 ])
 
-                # === YOUR EXISTING LOGIC (now protected) ===
                 await send_payment_instructions(api, db)
 
                 current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
                 await ad_management(api, current_wise_usd)
 
+                """Good for representation only, no need to keep it"""
                 await display_balance_and_transactions(wise_client, profile_id, "USD")
 
                 await verify_transfer(
