@@ -337,13 +337,13 @@ REMARK = ("◆︎ Trade with Confidence with DeFi_Capital. Your reliable, US-reg
           "\n"
           "Operations run 24/7.\n"
           "Payments are accepted via one of the associated companies."
-          "Most trades are completed within minutes after confirmation.\n"
+          "Trades are completed within minutes after confirmation.\n"
           "\n"
           "▶ Official Support\n"
           "\n"
           "Telegram: @DeFi_Capital\n"
           "Support is available 13:00-5:00 UTC.\n"
-          "Communication is conducted only via the official account listed above.")
+          "―Communication is conducted only via the official account listed above.")
 
 DEFAULT_TRADING_PREFERENCES = {
     "hasUnPostAd": 0,
