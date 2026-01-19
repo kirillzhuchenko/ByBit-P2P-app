@@ -776,7 +776,7 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
 
     This continuously checks the chat for new buyer messages.
     """
-    print(f"[Order {order_id}] ðŸ'€ Monitoring chat for buyer messages...")
+    print(f"[Order {order_id}] 👀 Monitoring chat for buyer messages...")
 
     # Get initial message count
     try:
@@ -786,7 +786,7 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
         )
         initial_count = len(initial_messages.get("result", {}).get("result", []))
     except Exception as e:
-        print(f"[Order {order_id}] âš ï¸ Failed to get initial messages: {e}")
+        print(f"[Order {order_id}] ⚠️ Failed to get initial messages: {e}")
         initial_count = 0
 
     # Poll for new messages every 3 seconds
@@ -811,10 +811,13 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
                     print(f"[Order {order_id}] New message detected from buyer!")
                     return True
 
+        except asyncio.CancelledError:
+            # Task was cancelled (timeout won the race)
+            print(f"[Order {order_id}] 🛑 Message monitoring cancelled")
+            raise  # Re-raise to properly handle cancellation
         except Exception as e:
-            print(f"[Order {order_id}] âš ï¸ Error checking messages: {e}")
+            print(f"[Order {order_id}] ⚠️ Error checking messages: {e}")
             # Continue polling even if there's an error
-            continue
 
 
 async def wait_for_message(client: P2P, order_id: str) -> str:
