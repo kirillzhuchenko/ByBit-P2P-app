@@ -245,7 +245,7 @@ def calculate_similarity(name1, name2):
     return SequenceMatcher(None, name1, name2).ratio()
 
 
-def names_match(name1, name2, threshold=0.85):
+def names_match(name1, name2, threshold=0.5): #threshold=0.85 original
     """
     Check if two names match across Russian, Arabic, Korean, Japanese, and Spanish
 
