@@ -945,8 +945,8 @@ async def handle_order_logic(client: P2P, db: Database, order_id: str, buyer_nam
         return
 
     # Idempotency check: Already messaged
-    if order_id in db.was_order_messaged(order_id):
-        print(f"[Order {order_id}] Already messaged, skipping...")
+    if db.was_order_messaged(order_id):
+        print(f"[Order {order_id}] ✅ Already messaged (per database), skipping...")
         return
 
     # Mark as active
@@ -989,11 +989,11 @@ async def handle_order_logic(client: P2P, db: Database, order_id: str, buyer_nam
         if success:
             # Mark order as messaged in database
             db.mark_order_messaged(order_id, retry_count=0)
-            print(f"[Order {order_id}] âœ ï¸ Order handling completed!\n ")
+            print(f"[Order {order_id}] Order handling completed!\n ")
 
     except Exception as e:
-        print(f"[Order {order_id}] âŒ Error in race condition handler: {e}")
-        send_telegram_message(f"âš ï¸ Race condition error for order {order_id}: {e}")
+        print(f"[Order {order_id}] Error in race condition handler: {e}")
+        send_telegram_message(f" Race condition error for order {order_id}: {e}")
 
     finally:
         # Remove from active handlers

@@ -209,12 +209,22 @@ def normalize_name(name):
     name = ' '.join(name.split())
     return name
 
+def first_and_last(name):
+    """Extract first and last name, ignore middle names"""
+    parts = name.strip().split()
+    if len(parts) >= 2:
+        return f"{parts[0]} {parts[-1]}"
+    return name
+
 
 def prepare_name_for_matching(name):
     """
     Full pipeline: detect script, transliterate, and normalize
     Handles Russian, Arabic, Korean, Japanese, and Spanish
     """
+    # Extract first and last name BEFORE any processing
+    name = first_and_last(name)
+
     # First, normalize Spanish characters
     name = normalize_spanish(name)
 
@@ -245,7 +255,7 @@ def calculate_similarity(name1, name2):
     return SequenceMatcher(None, name1, name2).ratio()
 
 
-def names_match(name1, name2, threshold=0.5): #threshold=0.85 original
+def names_match(name1, name2, threshold=0.65): #threshold=0.85 original
     """
     Check if two names match across Russian, Arabic, Korean, Japanese, and Spanish
 
