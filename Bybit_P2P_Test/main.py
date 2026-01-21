@@ -675,45 +675,6 @@ async def get_chat_message(client: P2P):
 
 #TODO: Think of adding QR-code. Payment link doesn't work with USD via Wise API calls
 async def send_chat_message_test(client: P2P):
-    orders = await fetch_pending_sell_orders(client=client)
-#
-#     if not orders:
-#         print("NO PENDING ORDERS FOUND")
-#         return
-#
-#     for order in orders:
-#         order_id = order["order_id"]
-#         print(f"Sending message to {order_id}")  #see if i need this line of code
-#         try:
-#             for msg in message:
-#                 await client.send_chat_message(
-#                     message=msg,
-#                     contentType="str",
-#                     orderId=order_id,
-#                     msgUuid=uuid.uuid4().hex,
-#                 )
-#                 await asyncio.sleep(0.5)
-#             await qr_upload(client=client)
-#             print(f"Message sequence sent for {order_id}")
-#         except Exception as e:
-#             send_telegram_message(f'{alert.get("bybit_msg")} for {order_id} -> {e}')
-#     try:
-#         qr_path = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
-#         file_path = await client.upload_chat_file(upload_file=qr_path)
-#         base = "https://api.bybit.com"
-#         print(f'Uploaded', file_path)
-#         url = file_path.get("result").get("url")
-#         full_url = f'{base}{url}'
-#
-#         if await client.send_chat_message(
-#             message=full_url,
-#             contentType="pic",
-#             orderId=2007879965210968064,
-#             msgUuid=uuid.uuid4().hex,
-#         ):
-#             print("msg sent")
-#     except Exception as e:
-#         print(f" QR upload failed (non-critical): {e}")
 
     try:
         qr_path = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
@@ -723,55 +684,19 @@ async def send_chat_message_test(client: P2P):
         # Get just the URL path from the upload response
         url = file_path.get("result").get("url")
 
+        print(f'sending url: {url}')
         # Send ONLY the URL path, NOT the full URL
         if await client.send_chat_message(
                 message=url,  # Changed: send only the URL path
                 contentType="pic",
-                orderId=2007879965210968064,
+                orderId='2007879965210968064',
                 msgUuid=uuid.uuid4().hex,
+                # fileName='qr.jpg'
+
         ):
             print("msg sent")
     except Exception as e:
         print(f"QR upload failed (non-critical): {e}")
-
-
-
-    # try:
-    #     qr_path = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
-    #
-    #     # 1. Upload the file
-    #     file_path = await client.upload_chat_file(upload_file=qr_path)
-    #     print(f'Uploaded: {file_path}')
-    #
-    #     # 2. Extract the relative URL (e.g., "/fiat/p2p/oss/...")
-    #     # Add a safety check in case the upload fails
-    #     if not file_path or not file_path.get("result"):
-    #         print("Upload failed, cannot retrieve URL")
-    #     else:
-    #         image_url_suffix = file_path.get("result").get("url")
-    #
-    #         # 3. Construct the VALID full URL for the image
-    #         # Use the domain only, NOT the API endpoint
-    #         base_domain = "https://api.bybit.com"
-    #         full_image_url = f'{base_domain}{image_url_suffix}'
-    #
-    #         print(f"Sending Image Message: {full_image_url}")
-    #
-    #         # 4. Send the message
-    #         response = await client.send_chat_message(
-    #             message=full_image_url,
-    #             contentType="pic",
-    #             orderId=2007879965210968064,
-    #             msgUuid=uuid.uuid4().hex,
-    #         )
-    #
-    #         if response:
-    #             print("msg sent successfully")
-    #         else:
-    #             print("Failed to send message (Response was None)")
-    #
-    # except Exception as e:
-    #     print(f"QR upload/send failed: {e}")
 
 
 async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_name: str, amount: str) -> bool:
@@ -800,24 +725,21 @@ async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_
                 )
                 await asyncio.sleep(0.5)  # Rate limiting
 
-            # Upload QR code
-            # try:
-            #     qr_path = "qr.jpg"
-            #     if os.path.exists(qr_path):
-            #         await client.upload_chat_file(upload_file=qr_path, orderId=order_id)
-            # except Exception as qr_error:
-            #     print(f" QR upload failed (non-critical): {qr_error}")
-
             try:
-                qr_path = "qr.jpg"
-                file_path = client.upload_chat_file(upload_file=qr_path, orderId=order_id)
-                url = file_path.get("result")
+                qr_path = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
+                file_path = await client.upload_chat_file(upload_file=qr_path, orderId=order_id)
+                print(f'Uploaded', file_path)
+
+                url = file_path.get("result").get("url")
+                print(f'sending url: {url}')
                 await client.send_chat_message(
-                    message=url.get("url"),
+                    message=url,
                     contentType="pic",
                     orderId=order_id,
                     msgUuid=uuid.uuid4().hex,
                 )
+                print("msg sent")
+
             except Exception as e:
                 print(f" QR upload failed (non-critical): {e}")
                 send_telegram_message(f" QR upload failed (non-critical): {e}")
@@ -1728,9 +1650,9 @@ async def main():
     #       await send_chat_message_test(client=api)
     #       )
 
-    print("Chat message after:",
-          await get_chat_message(client=api)
-          )
+    # print("Chat message after:",
+    #       await get_chat_message(client=api)
+    #       )
 
     """NEED to fix this!"""
     print("Sell order Info:",
