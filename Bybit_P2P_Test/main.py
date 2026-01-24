@@ -39,7 +39,6 @@ alert = {
     "save_match": "⚠️ATTENTION⚠️ Failed to save matched names in database for order ",
     "verification": "⚠️ATTENTION⚠️ Manual verification required for order #",
     "verify_reject": "⚠️ATTENTION⚠️ Name added to database with low matching score. Order #",
-    "add_order": "📝 New order added to database as NOT_VERIFIED"
 }
 
 #=====================
@@ -762,14 +761,6 @@ async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_
     if success:
         print(f"  Payment instructions sent successfully (attempt {retry_count + 1})")
 
-        # Send confirmation to admin
-        send_telegram_message(
-            f" Payment instructions sent\n "
-            f"Order: {order_id}\n"
-            f"Buyer: {buyer_name}\n"
-            f"Amount: ${amount}"
-        )
-
     return success
 
 
@@ -810,7 +801,6 @@ async def check_for_new_message(client: P2P, order_id: str) -> bool:
                 messages_list = current_messages.get("result", {}).get("result", [])
                 # Check if the latest message is from the buyer (not from us)
                 print(f"[Order {order_id}] New message detected from buyer!")
-                send_telegram_message(f"[Order {order_id}] New message detected from buyer!")
                 return True
                 # if messages_list:
                 #     latest_msg = messages_list[-1]
@@ -959,8 +949,6 @@ async def send_payment_instructions(client: P2P, db: Database):
                 )
                 print(f"New order {order_id} added to database")
 
-                # Send alert about new order
-                send_telegram_message(f'{alert.get("add_order")} Order #{order_id}')
 
             except Exception as e:
                 print(f" Failed to add order {order_id} to database: {e}")
@@ -1205,7 +1193,6 @@ def _process_sell_orders(sell_orders: list, incoming_transfers: list, db: Databa
                     counterparty_name=buyer_name,
                     verification_status=VerificationStatus.NOT_VERIFIED
                 )
-                send_telegram_message(f'{alert.get("add_order")} Order #{order_id}')
             except Exception as e:
                 print(f"   ⚠️ Failed to add order to database: {e}")
 
