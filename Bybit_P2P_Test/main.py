@@ -393,13 +393,17 @@ class AdPayload(TypedDict):
 @dataclass(frozen=True)
 class WiseAdConfig:
     buy_ad_id: str
-    sell_ad_id: str
+    sell_ad_id_low: str
+    sell_ad_id_med: str
+    sell_ad_id_high: str
 
 #TODO: Replace with real production buy="1799865939992154112" and sell="1989351720308887552" and more before going live
 """Test ads used"""
 TEST_CONFIG = WiseAdConfig(
     buy_ad_id="1977382182365315072",
-    sell_ad_id="1975370069588332544",
+    sell_ad_id_low="1793255340480356352",
+    sell_ad_id_med="1975370069588332544",
+    sell_ad_id_high="1793255340480356352",
 )
 
 
@@ -499,19 +503,26 @@ async def remove_wise_ad(
 async def ad_management(client: P2P, wise_balance: float):
 
     try:
-        bybit_balance_result, pending_buys, buy_ad_details, sell_ad_details = await asyncio.gather(
+        bybit_balance_result, pending_buys, buy_ad_details, sell_low_ad_details, sell_med_ad_details, sell_high_ad_details = await asyncio.gather(
             get_bybit_balance(client),
             fetch_pending_buy_orders(client),
             client.get_ad_details(itemId=TEST_CONFIG.buy_ad_id),
-            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id)
+            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_low),
+            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_med),
+            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_high),
         )
 
         bybit_balance = float(bybit_balance_result)
         buy_ad_info = buy_ad_details.get("result", {})
-        sell_ad_info = sell_ad_details.get("result", {})
+        sell_low_ad_info = sell_low_ad_details.get("result", {})
+        sell_med_ad_info = sell_med_ad_details.get("result", {})
+        sell_high_ad_info = sell_high_ad_details.get("result", {})
 
         is_buy_active = buy_ad_info.get("status") == AD_ONLINE
-        is_sell_active = sell_ad_info.get("status") == AD_ONLINE
+        is_sell_low_active = sell_low_ad_info.get("status") == AD_ONLINE
+        is_sell_med_active = sell_med_ad_info.get("status") == AD_ONLINE
+        is_sell_high_active = sell_high_ad_info.get("status") == AD_ONLINE
+
 
     except Exception as e:
         send_telegram_message(f'{alert.get("ad_details")} -> {e})')
@@ -579,7 +590,7 @@ async def ad_management(client: P2P, wise_balance: float):
     """Sell ad removed IF present balance < 100usdt on ByBit account. Otherwise the ad will remain active"""
     if bybit_balance >= 100:
 
-        if is_sell_active:
+        if is_sell_low_active:
             action_to_take = ActionType.MODIFY
             log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
         else:
@@ -589,7 +600,7 @@ async def ad_management(client: P2P, wise_balance: float):
 
         await update_wise_ad(
             client=client,
-            ad_id=TEST_CONFIG.sell_ad_id,
+            ad_id=TEST_CONFIG.sell_ad_id_low,
             side=AdSide.SELL,
             price=1.05,
             min_amount=150,
@@ -601,7 +612,42 @@ async def ad_management(client: P2P, wise_balance: float):
     else:
         await remove_wise_ad(
             client=client,
-            ad_id=TEST_CONFIG.sell_ad_id,
+            ad_id=TEST_CONFIG.sell_ad_id_low,
+        )
+        print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
+
+
+    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
+    if bybit_balance > 100:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id_low,
+        )
+        print("HARD SELL LOW AD REMOVE EXECUTED")
+
+        if is_sell_med_active:
+            action_to_take = ActionType.MODIFY
+            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
+        else:
+            action_to_take = ActionType.ACTIVATE
+            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
+        print(f"{log_msg}")  # Delete this line. Good for illustration only
+
+        await update_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id_med,
+            side=AdSide.SELL,
+            price=1.05,
+            min_amount=150,
+            max_amount=5000,
+            remark=REMARK,
+            action=action_to_take,
+            quantity=effective_bybit_balance
+        )
+    else:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id_med,
         )
         print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
 
@@ -609,9 +655,43 @@ async def ad_management(client: P2P, wise_balance: float):
     if bybit_balance > 100:
         await remove_wise_ad(
             client=client,
-            ad_id=TEST_CONFIG.sell_ad_id,
+            ad_id=TEST_CONFIG.sell_ad_id_med,
         )
-        print("HARD SELL AD REMOVE EXECUTED")
+        print("HARD SELL MED AD REMOVE EXECUTED")
+
+        if is_sell_high_active:
+            action_to_take = ActionType.MODIFY
+            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
+        else:
+            action_to_take = ActionType.ACTIVATE
+            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
+        print(f"{log_msg}")  # Delete this line. Good for illustration only
+
+        await update_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id_high,
+            side=AdSide.SELL,
+            price=1.05,
+            min_amount=150,
+            max_amount=5000,
+            remark=REMARK,
+            action=action_to_take,
+            quantity=effective_bybit_balance
+        )
+    else:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id_high,
+        )
+        print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
+
+    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
+    if bybit_balance > 100:
+        await remove_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.sell_ad_id_high,
+        )
+        print("HARD SELL HIGH AD REMOVE EXECUTED")
 
 
 async def fetch_pending_sell_orders(client: P2P):
@@ -672,32 +752,6 @@ async def get_chat_message(client: P2P):
     return msg["result"]["result"]
 
 
-#TODO: Think of adding QR-code. Payment link doesn't work with USD via Wise API calls
-async def send_chat_message_test(client: P2P):
-
-    try:
-        qr_path = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
-        file_path = await client.upload_chat_file(upload_file=qr_path)
-        print(f'Uploaded', file_path)
-
-        # Get just the URL path from the upload response
-        url = file_path.get("result").get("url")
-
-        print(f'sending url: {url}')
-        # Send ONLY the URL path, NOT the full URL
-        if await client.send_chat_message(
-                message=url,  # Changed: send only the URL path
-                contentType="pic",
-                orderId='2007879965210968064',
-                msgUuid=uuid.uuid4().hex,
-                # fileName='qr.jpg'
-
-        ):
-            print("msg sent")
-    except Exception as e:
-        print(f"QR upload failed (non-critical): {e}")
-
-
 async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_name: str, amount: str) -> bool:
     """
     Send payment instructions immediately to a specific order.
@@ -727,10 +781,9 @@ async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_
             try:
                 qr_path = "C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg"
                 file_path = await client.upload_chat_file(upload_file=qr_path, orderId=order_id)
-                print(f'Uploaded', file_path)
 
                 url = file_path.get("result").get("url")
-                print(f'sending url: {url}')
+
                 await client.send_chat_message(
                     message=url,
                     contentType="pic",
@@ -1633,13 +1686,6 @@ async def main():
           await get_chat_message(client=api)
           )
 
-    # print("Message sent:",
-    #       await send_chat_message_test(client=api)
-    #       )
-
-    # print("Chat message after:",
-    #       await get_chat_message(client=api)
-    #       )
 
     """NEED to fix this!"""
     print("Sell order Info:",
