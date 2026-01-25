@@ -10,7 +10,7 @@ import httpx
 import csv
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from typing import TypedDict
+from typing import TypedDict, Dict, List
 from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
 from database import Database, VerificationSource, VerificationStatus
@@ -403,8 +403,22 @@ TEST_CONFIG = WiseAdConfig(
     buy_ad_id="1977382182365315072",
     sell_ad_id_low="1793255340480356352",
     sell_ad_id_med="1975370069588332544",
-    sell_ad_id_high="1793255340480356352",
+    sell_ad_id_high="1793292594570334208",
 )
+
+@dataclass
+class PriceTier:
+    name: str
+    ad_id: str
+    price: float
+    min_price: float
+    max_price: float
+
+@dataclass
+class MarketPrices:
+    bot: float
+    mid: float
+    top: float
 
 
 # ============================
@@ -496,7 +510,8 @@ async def remove_wise_ad(
     )
     return await client.remove_ad(**payload)
 
-async def filter_online_ads(client: P2P): # Filters all active ads of other participants including your own
+async def get_market_prices(client: P2P) -> MarketPrices:
+    """Fetches and calculates competitive market prices"""
     raw_data = await client.get_online_ads(
         tokenId='USDT',
         currencyId='USD',
@@ -504,261 +519,145 @@ async def filter_online_ads(client: P2P): # Filters all active ads of other part
         size='1000',
     )
 
-    data = raw_data.get('result').get('items')
+    data = raw_data.get('result', {}).get('items', [])
 
-    # Filtering raw data by payment method
-    prices_raw, filter_by_method = [], []
-    for item in data:
-        prices_raw.append(item['price'])
-        if '78' in item.get('payments'):
-            filter_by_method.append(item)
+    # Filter by payment method
+    filtered = [
+        item for item in data
+        if '78' in item.get('payments', [])
+    ]
 
-    # Filtering raw result by price
-    filter_by_price = []
-    for item in filter_by_method:
-        price_value = float(item.get('price', 0))
+    # Filter by price range and min amount
+    filtered = [
+        item for item in filtered
+        if 1.01 <= float(item.get('price', 0)) <= 1.05
+           and float(item.get('minAmount', 0)) >= 200
+    ]
 
-        if 1.01 <= price_value <= 1.05:
-            filter_by_price.append(item)
+    # Categorize by price tier
+    low = [item for item in filtered if 1.01 <= float(item['price']) <= 1.02]
+    med = [item for item in filtered if 1.017 <= float(item['price']) <= 1.03]
+    high = [item for item in filtered if 1.025 <= float(item['price']) <= 1.05]
 
-    # Final filtering by minimum amount
-    filter_by_amount = []
-    for item in filter_by_price:
-        min_amount = float(item.get('minAmount', 0))
+    # Calculate averages with safety checks
+    bot = round(sum(float(i['price']) for i in low) / len(low) - 0.001, 3) if low else 1.015
+    mid = round(sum(float(i['price']) for i in med) / len(med) - 0.001, 3) if med else 1.025
+    top = round(sum(float(i['price']) for i in high) / len(high) - 0.001, 3) if high else 1.04
 
-        if min_amount >= 200:
-            filter_by_amount.append(item)
-
-    data = filter_by_amount
-
-    # Filtering data by ad price
-    low, med, high = [], [], []
-    for item in data:
-        price_value = float(item.get('price', 0))
-
-        if 1.01 <= price_value <= 1.02:
-            low.append(item)
-
-        if 1.017 <= price_value <= 1.03:
-            med.append(item)
-
-        if 1.025 <= price_value <= 1.05:
-            high.append(item)
-
-    prices_low = []
-    for item in low:
-        prices_low.append(float(item.get('price', 0)))
-
-    prices_med = []
-    for item in med:
-        prices_med.append(float(item.get('price', 0)))
-
-    prices_high = []
-    for item in high:
-        prices_high.append(float(item.get('price', 0)))
-
-    bot = round(sum(prices_low) / len(low) - 0.001, 3)
-    mid = round(sum(prices_med) / len(med) - 0.001, 3)
-    top = round(sum(prices_high) / len(high) - 0.001, 3)
-    return bot, mid, top
+    return MarketPrices(bot=bot, mid=mid, top=top)
 
 
-#TODO: Think of dynamic price change based on market sentiment
-#TODO: Think if you need to split the func() into 3 separate once: data(), buy_logic(), sell_logic()
+async def manage_buy_ad(
+        client: P2P,
+        effective_balance: float,
+        is_active: bool,
+        buy_price: float = 0.97
+):
+    """Manages the buy ad based on available balance"""
+    MIN_THRESHOLD = 500
 
-"""The function itself is bulky but works just fine"""
+    if effective_balance >= MIN_THRESHOLD:
+        new_max = str(Decimal(effective_balance).quantize(
+            Decimal("0.01"), rounding=ROUND_DOWN
+        ))
+
+        action = ActionType.MODIFY if is_active else ActionType.ACTIVATE
+
+        await update_wise_ad(
+            client=client,
+            ad_id=TEST_CONFIG.buy_ad_id,
+            side=AdSide.BUY,
+            price=buy_price,
+            min_amount=150,
+            max_amount=5000,
+            remark=REMARK,
+            action=action,
+            quantity=new_max,
+        )
+    else:
+        await remove_wise_ad(client=client, ad_id=TEST_CONFIG.buy_ad_id)
+
+    #TODO: Remove if statement below before going live
+    if effective_balance > 100:
+        await remove_wise_ad(client=client, ad_id=TEST_CONFIG.buy_ad_id)
+        print("HARD REMOVE BUY AD EXECUTED")
+
+
+async def manage_sell_ads(
+        client: P2P,
+        bybit_balance: float,
+        market_prices: MarketPrices,
+        sell_ads_status: Dict[str, bool]
+):
+    """Manages all three sell ads with dynamic pricing"""
+    tiers = [
+        PriceTier("low", TEST_CONFIG.sell_ad_id_low, market_prices.bot, 1.01, 1.02),
+        PriceTier("med", TEST_CONFIG.sell_ad_id_med, market_prices.mid, 1.017, 1.03),
+        PriceTier("high", TEST_CONFIG.sell_ad_id_high, market_prices.top, 1.025, 1.05),
+    ]
+
+    effective_balance = str(bybit_balance)
+
+    if bybit_balance >= 100:
+        for tier in tiers:
+            clamped_price = max(tier.min_price, min(tier.price, tier.max_price))
+
+            action = (ActionType.MODIFY if sell_ads_status.get(tier.ad_id)
+                      else ActionType.ACTIVATE)
+
+            await update_wise_ad(
+                client=client,
+                ad_id=tier.ad_id,
+                side=AdSide.SELL,
+                price=clamped_price,
+                min_amount=150,
+                max_amount=5000,
+                remark=REMARK,
+                action=action,
+                quantity=effective_balance
+            )
+    else:
+        # Remove all sell ads if balance too low
+        for tier in tiers:
+            await remove_wise_ad(client=client, ad_id=tier.ad_id)
+
+
 async def ad_management(client: P2P, wise_balance: float):
-
     try:
-        bybit_balance_result, pending_buys, buy_ad_details, sell_low_ad_details, sell_med_ad_details, sell_high_ad_details = await asyncio.gather(
+        # Fetch all data in parallel
+        (bybit_balance_result, pending_buys, buy_ad_details,
+         sell_low_ad_details, sell_med_ad_details, sell_high_ad_details,
+         market_prices) = await asyncio.gather(
             get_bybit_balance(client),
             fetch_pending_buy_orders(client),
             client.get_ad_details(itemId=TEST_CONFIG.buy_ad_id),
             client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_low),
             client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_med),
             client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_high),
+            get_market_prices(client),  # Fetch dynamic prices
         )
 
         bybit_balance = float(bybit_balance_result)
-        buy_ad_info = buy_ad_details.get("result", {})
-        sell_low_ad_info = sell_low_ad_details.get("result", {})
-        sell_med_ad_info = sell_med_ad_details.get("result", {})
-        sell_high_ad_info = sell_high_ad_details.get("result", {})
 
-        is_buy_active = buy_ad_info.get("status") == AD_ONLINE
-        is_sell_low_active = sell_low_ad_info.get("status") == AD_ONLINE
-        is_sell_med_active = sell_med_ad_info.get("status") == AD_ONLINE
-        is_sell_high_active = sell_high_ad_info.get("status") == AD_ONLINE
+        # Calculate effective balance
+        locked_funds = sum(float(o.get("amount", 0)) for o in (pending_buys or []))
+        effective_balance = wise_balance - locked_funds - 500
 
+        # Manage buy ad
+        is_buy_active = buy_ad_details.get("result", {}).get("status") == AD_ONLINE
+        await manage_buy_ad(client, effective_balance, is_buy_active)
+
+        # Manage sell ads with dynamic pricing
+        sell_ads_status = {
+            TEST_CONFIG.sell_ad_id_low: sell_low_ad_details.get("result", {}).get("status") == AD_ONLINE,
+            TEST_CONFIG.sell_ad_id_med: sell_med_ad_details.get("result", {}).get("status") == AD_ONLINE,
+            TEST_CONFIG.sell_ad_id_high: sell_high_ad_details.get("result", {}).get("status") == AD_ONLINE,
+        }
+
+        await manage_sell_ads(client, bybit_balance, market_prices, sell_ads_status)
 
     except Exception as e:
-        send_telegram_message(f'{alert.get("ad_details")} -> {e})')
-        return  # Stop execution if we can't see the ad state
-
-    MIN_THRESHOLD = 500
-    MIN_WISE_BALANCE = 500
-
-    locked_funds = 0.0
-    if pending_buys:
-        for order in pending_buys:
-            locked_funds += float(order.get("amount", 0))
-
-    effective_balance = wise_balance - locked_funds - MIN_WISE_BALANCE
-    """Remove the line below. It's good for illustration only"""
-    print(f"🏦 Wise: ${wise_balance} | 🔒 Locked in Orders: ${locked_funds} | 🟢 Effective: ${effective_balance}")
-
-    ################
-    # BUY AD LOGIC #
-    ################
-
-    if effective_balance >= MIN_THRESHOLD:
-        new_max = str(Decimal(effective_balance).quantize      # new_max is required to be str.
-                      (Decimal("0.01"), rounding=ROUND_DOWN))  #Have to preform rounding due to platform limitations
-
-        if is_buy_active:
-            action_to_take = ActionType.MODIFY
-            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
-        else:
-            action_to_take = ActionType.ACTIVATE
-            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
-        print(f"{log_msg} | New max: {new_max}")  # Delete this line. Good for illustration only
-
-        await update_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.buy_ad_id,
-            side=AdSide.BUY,
-            price=0.97,
-            min_amount=150,
-            max_amount=5000,
-            remark=REMARK,
-            action=action_to_take,
-            quantity=new_max,
-        )
-
-    else:
-        print(
-            "📉 Effective balance below 500 or active orders exist. Removing Buy Ad.")  # Delete this line. Good for illustration only
-        await remove_wise_ad(client=client,
-                             ad_id=TEST_CONFIG.buy_ad_id,
-                             )
-
-    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
-    if effective_balance > 100:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.buy_ad_id
-        )
-        print("HARD BUY AD REMOVE EXECUTED")
-
-    #################
-    # SELL AD LOGIC #
-    #################
-    effective_bybit_balance = str(bybit_balance) # Required to be a str
-    """Sell ad removed IF present balance < 100usdt on ByBit account. Otherwise the ad will remain active"""
-    if bybit_balance >= 100:
-
-        if is_sell_low_active:
-            action_to_take = ActionType.MODIFY
-            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
-        else:
-            action_to_take = ActionType.ACTIVATE
-            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
-        print(f"{log_msg}")  # Delete this line. Good for illustration only
-
-        await update_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_low,
-            side=AdSide.SELL,
-            price=1.05,
-            min_amount=150,
-            max_amount=5000,
-            remark=REMARK,
-            action=action_to_take,
-            quantity=effective_bybit_balance
-        )
-    else:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_low,
-        )
-        print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
-
-
-    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
-    if bybit_balance > 100:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_low,
-        )
-        print("HARD SELL LOW AD REMOVE EXECUTED")
-
-        if is_sell_med_active:
-            action_to_take = ActionType.MODIFY
-            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
-        else:
-            action_to_take = ActionType.ACTIVATE
-            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
-        print(f"{log_msg}")  # Delete this line. Good for illustration only
-
-        await update_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_med,
-            side=AdSide.SELL,
-            price=1.05,
-            min_amount=150,
-            max_amount=5000,
-            remark=REMARK,
-            action=action_to_take,
-            quantity=effective_bybit_balance
-        )
-    else:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_med,
-        )
-        print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
-
-    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
-    if bybit_balance > 100:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_med,
-        )
-        print("HARD SELL MED AD REMOVE EXECUTED")
-
-        if is_sell_high_active:
-            action_to_take = ActionType.MODIFY
-            log_msg = "Ad is currently active, Modifying ad instead"  # Delete this line. Good for illustration only
-        else:
-            action_to_take = ActionType.ACTIVATE
-            log_msg = "Ad is currently inactive, Activating ad instead"  # Delete this line. Good for illustration only
-        print(f"{log_msg}")  # Delete this line. Good for illustration only
-
-        await update_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_high,
-            side=AdSide.SELL,
-            price=1.05,
-            min_amount=150,
-            max_amount=5000,
-            remark=REMARK,
-            action=action_to_take,
-            quantity=effective_bybit_balance
-        )
-    else:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_high,
-        )
-        print("SELL AD REMOVED")  # Remove this line before going live. It's good for visualization purpose only
-
-    # TODO: Remove the statement below before going live. It removes test ad so it's not shown on public.
-    if bybit_balance > 100:
-        await remove_wise_ad(
-            client=client,
-            ad_id=TEST_CONFIG.sell_ad_id_high,
-        )
-        print("HARD SELL HIGH AD REMOVE EXECUTED")
+        send_telegram_message(f'{alert.get("ad_details")} -> {e}')
 
 
 async def fetch_pending_sell_orders(client: P2P):
