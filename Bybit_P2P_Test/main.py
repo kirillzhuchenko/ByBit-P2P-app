@@ -496,6 +496,73 @@ async def remove_wise_ad(
     )
     return await client.remove_ad(**payload)
 
+async def filter_online_ads(client: P2P): # Filters all active ads of other participants including your own
+    raw_data = await client.get_online_ads(
+        tokenId='USDT',
+        currencyId='USD',
+        side='1',
+        size='1000',
+    )
+
+    data = raw_data.get('result').get('items')
+
+    # Filtering raw data by payment method
+    prices_raw, filter_by_method = [], []
+    for item in data:
+        prices_raw.append(item['price'])
+        if '78' in item.get('payments'):
+            filter_by_method.append(item)
+
+    # Filtering raw result by price
+    filter_by_price = []
+    for item in filter_by_method:
+        price_value = float(item.get('price', 0))
+
+        if 1.01 <= price_value <= 1.05:
+            filter_by_price.append(item)
+
+    # Final filtering by minimum amount
+    filter_by_amount = []
+    for item in filter_by_price:
+        min_amount = float(item.get('minAmount', 0))
+
+        if min_amount >= 200:
+            filter_by_amount.append(item)
+
+    data = filter_by_amount
+
+    # Filtering data by ad price
+    low, med, high = [], [], []
+    for item in data:
+        price_value = float(item.get('price', 0))
+
+        if 1.01 <= price_value <= 1.02:
+            low.append(item)
+
+        if 1.017 <= price_value <= 1.03:
+            med.append(item)
+
+        if 1.025 <= price_value <= 1.05:
+            high.append(item)
+
+    prices_low = []
+    for item in low:
+        prices_low.append(float(item.get('price', 0)))
+
+    prices_med = []
+    for item in med:
+        prices_med.append(float(item.get('price', 0)))
+
+    prices_high = []
+    for item in high:
+        prices_high.append(float(item.get('price', 0)))
+
+    bot = round(sum(prices_low) / len(low) - 0.001, 3)
+    mid = round(sum(prices_med) / len(med) - 0.001, 3)
+    top = round(sum(prices_high) / len(high) - 0.001, 3)
+    return bot, mid, top
+
+
 #TODO: Think of dynamic price change based on market sentiment
 #TODO: Think if you need to split the func() into 3 separate once: data(), buy_logic(), sell_logic()
 
