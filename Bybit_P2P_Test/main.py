@@ -53,8 +53,8 @@ message = [
      "🤖This order is being processed automatically by our P2P bot — no need to wait for a human response🤖\n\n"
      "Please procced with the payment to IP ZHUCHENKO, LLC💼.\n\n"
      "❗IMPORTANT❗\n\n"
-     "  ✅The name on ByBit and Wise MUST match to complete the order.\n"
-     "  ✅Corporate transfers are accepted.\n\n"
+     "   ✅The name on ByBit and Wise MUST match to complete the order.\n"
+     "   ❗Corporate transfers will be rejected with 5% fee.\n\n"
      "Payment details:\n",
     f"💸Account Link:\n {account_link}",
     f"💸Wise Tag:\n {wise_tag}",
@@ -223,7 +223,7 @@ async def display_balance_and_transactions(wise_client, profile_id, currency="US
     for b in balances:
         if b["currency"] == currency:
             account = b
-            balance_amount = float(b["amount"]["value"])
+            balance_amount = round(float(b["amount"]["value"]), 0)
             print(f"\n[{datetime.now().isoformat()}] 💰 Current {currency} Balance: {balance_amount}")
             break
 
@@ -387,9 +387,6 @@ class AdPayload(TypedDict):
 # ============================
 # CONFIG
 # ============================
-"""WARNING! Setting frozen=True makes the instance immutable after creation.
-                    Attributes cannot be modified
-        Attempts to reassign values raise a FrozenInstanceError"""
 @dataclass(frozen=True)
 class WiseAdConfig:
     buy_ad_id: str
@@ -419,7 +416,6 @@ class MarketPrices:
     bot: float
     mid: float
     top: float
-
 
 # ============================
 # PAYLOAD BUILDER
@@ -568,7 +564,7 @@ async def manage_buy_ad(
             ad_id=TEST_CONFIG.buy_ad_id,
             side=AdSide.BUY,
             price=buy_price,
-            min_amount=150,
+            min_amount=200,
             max_amount=5000,
             remark=REMARK,
             action=action,
@@ -610,7 +606,7 @@ async def manage_sell_ads(
                 ad_id=tier.ad_id,
                 side=AdSide.SELL,
                 price=clamped_price,
-                min_amount=150,
+                min_amount=200,
                 max_amount=5000,
                 remark=REMARK,
                 action=action,
