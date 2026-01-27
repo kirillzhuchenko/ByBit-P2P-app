@@ -394,9 +394,7 @@ class WiseAdConfig:
     sell_ad_id_med: str
     sell_ad_id_high: str
 
-#TODO: Replace with real production buy="1799865939992154112" and sell="1989351720308887552" and more before going live
-"""Test ads used"""
-TEST_CONFIG = WiseAdConfig(
+AD_CONFIG = WiseAdConfig(
     buy_ad_id="1977382182365315072",
     sell_ad_id_low="1793255340480356352",
     sell_ad_id_med="1975370069588332544",
@@ -561,7 +559,7 @@ async def manage_buy_ad(
 
         await update_wise_ad(
             client=client,
-            ad_id=TEST_CONFIG.buy_ad_id,
+            ad_id=AD_CONFIG.buy_ad_id,
             side=AdSide.BUY,
             price=buy_price,
             min_amount=200,
@@ -571,11 +569,11 @@ async def manage_buy_ad(
             quantity=new_max,
         )
     else:
-        await remove_wise_ad(client=client, ad_id=TEST_CONFIG.buy_ad_id)
+        await remove_wise_ad(client=client, ad_id=AD_CONFIG.buy_ad_id)
 
     #TODO: Remove if statement below before going live
     if effective_balance > 100:
-        await remove_wise_ad(client=client, ad_id=TEST_CONFIG.buy_ad_id)
+        await remove_wise_ad(client=client, ad_id=AD_CONFIG.buy_ad_id)
         print("HARD REMOVE BUY AD EXECUTED")
 
 
@@ -587,9 +585,9 @@ async def manage_sell_ads(
 ):
     """Manages all three sell ads with dynamic pricing"""
     tiers = [
-        PriceTier("low", TEST_CONFIG.sell_ad_id_low, market_prices.bot, 1.01, 1.02),
-        PriceTier("med", TEST_CONFIG.sell_ad_id_med, market_prices.mid, 1.017, 1.03),
-        PriceTier("high", TEST_CONFIG.sell_ad_id_high, market_prices.top, 1.025, 1.05),
+        PriceTier("low", AD_CONFIG.sell_ad_id_low, market_prices.bot, 1.01, 1.02),
+        PriceTier("med", AD_CONFIG.sell_ad_id_med, market_prices.mid, 1.017, 1.03),
+        PriceTier("high", AD_CONFIG.sell_ad_id_high, market_prices.top, 1.025, 1.05),
     ]
 
     effective_balance = str(bybit_balance)
@@ -626,10 +624,10 @@ async def ad_management(client: P2P, wise_balance: float):
          market_prices) = await asyncio.gather(
             get_bybit_balance(client),
             fetch_pending_buy_orders(client),
-            client.get_ad_details(itemId=TEST_CONFIG.buy_ad_id),
-            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_low),
-            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_med),
-            client.get_ad_details(itemId=TEST_CONFIG.sell_ad_id_high),
+            client.get_ad_details(itemId=AD_CONFIG.buy_ad_id),
+            client.get_ad_details(itemId=AD_CONFIG.sell_ad_id_low),
+            client.get_ad_details(itemId=AD_CONFIG.sell_ad_id_med),
+            client.get_ad_details(itemId=AD_CONFIG.sell_ad_id_high),
             get_market_prices(client),  # Fetch dynamic prices
         )
 
@@ -645,9 +643,9 @@ async def ad_management(client: P2P, wise_balance: float):
 
         # Manage sell ads with dynamic pricing
         sell_ads_status = {
-            TEST_CONFIG.sell_ad_id_low: sell_low_ad_details.get("result", {}).get("status") == AD_ONLINE,
-            TEST_CONFIG.sell_ad_id_med: sell_med_ad_details.get("result", {}).get("status") == AD_ONLINE,
-            TEST_CONFIG.sell_ad_id_high: sell_high_ad_details.get("result", {}).get("status") == AD_ONLINE,
+            AD_CONFIG.sell_ad_id_low: sell_low_ad_details.get("result", {}).get("status") == AD_ONLINE,
+            AD_CONFIG.sell_ad_id_med: sell_med_ad_details.get("result", {}).get("status") == AD_ONLINE,
+            AD_CONFIG.sell_ad_id_high: sell_high_ad_details.get("result", {}).get("status") == AD_ONLINE,
         }
 
         await manage_sell_ads(client, bybit_balance, market_prices, sell_ads_status)
