@@ -15,7 +15,7 @@ from decimal import Decimal, ROUND_DOWN
 from notifier import send_telegram_message
 from database import Database, VerificationSource, VerificationStatus
 from names import names_match
-from breaker import CircuitBreaker, CircuitBreakerOpenError, print_circuit_breaker_dashboard
+from breaker import CircuitBreaker, CircuitBreakerOpenError
 
 
 #=====================
@@ -1708,13 +1708,6 @@ async def main():
 
         while True:
             try:
-                # === DISPLAY CIRCUIT BREAKER DASHBOARD ===
-                print_circuit_breaker_dashboard([
-                    wise_transfers_breaker,
-                    wise_balance_breaker,
-                    bybit_orders_breaker,
-                    bybit_balance_breaker
-                ])
 
                 await send_payment_instructions(api, db)
 
