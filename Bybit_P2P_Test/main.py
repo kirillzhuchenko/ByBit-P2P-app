@@ -309,16 +309,12 @@ class OrderStatus(IntEnum):
 class PaymentType(IntEnum):
     WISE = 78
 
+MY_USER_ID = '124981367'
 AD_ONLINE = 10
 DEFAULT_TOKEN_ID = "USDT"
 DEFAULT_CURRENCY_ID = "USD"
 DEFAULT_PAYMENT_IDS = ["21555896"]  # API requires string IDs # Check what it's for
-# REMARK = ("✅WISE TO WISE ONLY✅\n"
-#           "💼Payment will be processed via my sole-owned company, IP ZHUCHENKO, LLC\n"
-#           "⛔- No 3rd party payment accepted\n"
-#           "✅️Corporate transfers are accepted but subject to verification\n"
-#           "⚠️If the payment is Pending you must cancel the transfer and the order immediately\n"
-#           "⚡️🚀Instant release🚀⚡️")
+
 REMARK = ("◆︎ Trade with Confidence with DeFi_Capital. Your reliable, US-regulated trading partner.\n"
           "\n"
           "By placing a trade request, you agree to the terms below:\n"
@@ -702,7 +698,7 @@ async def release_assets(client: P2P):
     action = await client.release_assets()
     return action
 
-"""TO BE REMOVED IN THE FUTURE"""
+#TODO: Remove this func()
 async def get_chat_message(client: P2P):
     msg = await client.get_chat_messages(
         orderId="2007879965210968064",
@@ -780,47 +776,37 @@ async def send_payment_instructions_immediate(client: P2P, order_id: str, buyer_
 async def check_for_new_message(client: P2P, order_id: str) -> bool:
     """
     Poll for new messages from the buyer.
-    Returns True when a new message is detected.
-
-    This continuously checks the chat for new buyer messages.
+    Returns True when ANY buyer message is detected.
     """
     print(f"[Order {order_id}] 👀 Monitoring chat for buyer messages...")
 
-    # Get initial message count
-    try:
-        initial_messages = await client.get_chat_messages(
-            orderId=order_id,
-            size=100
-        )
-        initial_count = len(initial_messages.get("result", {}).get("result", []))
-    except Exception as e:
-        print(f"[Order {order_id}] ⚠️ Failed to get initial messages: {e}")
-        send_telegram_message(f"[Order {order_id}] ⚠️ Failed to get initial messages: {e}")
-        initial_count = 0
+    # Start with zero baseline - any buyer message counts as "new"
+    initial_buyer_count = 0
 
-    # Poll for new messages every 3 seconds
+    # Poll for buyer messages every 3 seconds
     while True:
-        await asyncio.sleep(3)  # Check every 3 seconds
+        await asyncio.sleep(3)
 
         try:
             current_messages = await client.get_chat_messages(
                 orderId=order_id,
                 size=100
             )
-            current_count = len(current_messages.get("result", {}).get("result", []))
+            messages_list = current_messages.get("result", {}).get("result", [])
 
-            # New message detected
-            if current_count > initial_count:
-                messages_list = current_messages.get("result", {}).get("result", [])
-                # Check if the latest message is from the buyer (not from us)
-                print(f"[Order {order_id}] New message detected from buyer!")
+            # Filter to only buyer messages
+            current_buyer_messages = [
+                msg for msg in messages_list
+                if msg.get('userId') != MY_USER_ID
+                   and msg.get('roleType') == 'user'
+            ]
+            current_buyer_count = len(current_buyer_messages)
+
+            # Any buyer message detected
+            if current_buyer_count > initial_buyer_count:
+                latest_buyer_msg = current_buyer_messages[0]
+                print(f"[Order {order_id}] 📨 Buyer message detected: {latest_buyer_msg.get('message')}")
                 return True
-                # if messages_list:
-                #     latest_msg = messages_list[-1]
-                #     # Assuming messages from buyer have a different sender ID
-                #     # Adjust this logic based on your actual message structure
-                #     print(f"[Order {order_id}] New message detected from buyer!")
-                #     return True
 
         except asyncio.CancelledError:
             # Task was cancelled (timeout won the race)
