@@ -551,7 +551,13 @@ async def manage_buy_ad(
             Decimal("0.01"), rounding=ROUND_DOWN
         ))
 
-        action = ActionType.MODIFY if is_active else ActionType.ACTIVATE
+        if is_active:
+            action = ActionType.MODIFY
+            log_msg = "Buy ad is active, Modifying instead"
+        else:
+            action = ActionType.ACTIVATE
+            log_msg = "Buy ad is inactive, Modifying instead"
+        print(log_msg)
 
         await update_wise_ad(
             client=client,
@@ -577,7 +583,7 @@ async def manage_sell_ads(
         client: P2P,
         bybit_balance: float,
         market_prices: MarketPrices,
-        sell_ads_status: Dict[str, bool]
+        sell_ads_status: Dict[str, bool],
 ):
     """Manages all three sell ads with dynamic pricing"""
     tiers = [
@@ -592,8 +598,18 @@ async def manage_sell_ads(
         for tier in tiers:
             clamped_price = max(tier.min_price, min(tier.price, tier.max_price))
 
-            action = (ActionType.MODIFY if sell_ads_status.get(tier.ad_id)
-                      else ActionType.ACTIVATE)
+            # Check if this specific ad is currently active
+            is_active = sell_ads_status.get(tier.ad_id, False)
+
+            if is_active:
+                action = ActionType.MODIFY
+                log_msg = f"Sell ad {tier.name} ({tier.ad_id}) is active, Modifying"
+            else:
+                action = ActionType.ACTIVATE
+                log_msg = f"Sell ad {tier.name} ({tier.ad_id}) is inactive, Activating"
+
+            print(f"DEBUG: tier.ad_id={tier.ad_id}, sell_ads_status={sell_ads_status}, is_active={is_active}")
+            print(log_msg)
 
             await update_wise_ad(
                 client=client,
@@ -611,6 +627,43 @@ async def manage_sell_ads(
         for tier in tiers:
             await remove_wise_ad(client=client, ad_id=tier.ad_id)
 
+
+# async def ad_management(client: P2P, wise_balance: float):
+#     try:
+#         # Fetch all data in parallel
+#         (bybit_balance_result, pending_buys, buy_ad_details,
+#          sell_low_ad_details, sell_med_ad_details, sell_high_ad_details,
+#          market_prices) = await asyncio.gather(
+#             get_bybit_balance(client),
+#             fetch_pending_buy_orders(client),
+#             client.get_ad_details(itemId=AD_CONFIG.buy_ad_id),
+#             client.get_ad_details(itemId=AD_CONFIG.sell_ad_id_low),
+#             client.get_ad_details(itemId=AD_CONFIG.sell_ad_id_med),
+#             client.get_ad_details(itemId=AD_CONFIG.sell_ad_id_high),
+#             get_market_prices(client),  # Fetch dynamic prices
+#         )
+#
+#         bybit_balance = float(bybit_balance_result)
+#
+#         # Calculate effective balance
+#         locked_funds = sum(float(o.get("amount", 0)) for o in (pending_buys or []))
+#         effective_balance = wise_balance - locked_funds - 500
+#
+#         # Manage buy ad
+#         is_buy_active = buy_ad_details.get("result", {}).get("status") == AD_ONLINE
+#         await manage_buy_ad(client, effective_balance, is_buy_active)
+#
+#         # Manage sell ads with dynamic pricing
+#         sell_ads_status = {
+#             AD_CONFIG.sell_ad_id_low: sell_low_ad_details.get("result", {}).get("status") == AD_ONLINE,
+#             AD_CONFIG.sell_ad_id_med: sell_med_ad_details.get("result", {}).get("status") == AD_ONLINE,
+#             AD_CONFIG.sell_ad_id_high: sell_high_ad_details.get("result", {}).get("status") == AD_ONLINE,
+#         }
+#
+#         await manage_sell_ads(client, bybit_balance, market_prices, sell_ads_status)
+#
+#     except Exception as e:
+#         send_telegram_message(f'{alert.get("ad_details")} -> {e}')
 
 async def ad_management(client: P2P, wise_balance: float):
     try:
@@ -637,12 +690,20 @@ async def ad_management(client: P2P, wise_balance: float):
         is_buy_active = buy_ad_details.get("result", {}).get("status") == AD_ONLINE
         await manage_buy_ad(client, effective_balance, is_buy_active)
 
+        # DEBUG: Print raw ad details to see actual status values
+        print(f"DEBUG sell_low status: {sell_low_ad_details.get('result', {}).get('status')}")
+        print(f"DEBUG sell_med status: {sell_med_ad_details.get('result', {}).get('status')}")
+        print(f"DEBUG sell_high status: {sell_high_ad_details.get('result', {}).get('status')}")
+        print(f"DEBUG AD_ONLINE constant: {AD_ONLINE}")
+
         # Manage sell ads with dynamic pricing
         sell_ads_status = {
             AD_CONFIG.sell_ad_id_low: sell_low_ad_details.get("result", {}).get("status") == AD_ONLINE,
             AD_CONFIG.sell_ad_id_med: sell_med_ad_details.get("result", {}).get("status") == AD_ONLINE,
             AD_CONFIG.sell_ad_id_high: sell_high_ad_details.get("result", {}).get("status") == AD_ONLINE,
         }
+
+        print(f"DEBUG sell_ads_status: {sell_ads_status}")
 
         await manage_sell_ads(client, bybit_balance, market_prices, sell_ads_status)
 
