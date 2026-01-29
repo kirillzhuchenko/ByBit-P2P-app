@@ -550,8 +550,11 @@ async def manage_buy_ad(
         new_max = str(Decimal(effective_balance).quantize(
             Decimal("0.01"), rounding=ROUND_DOWN
         ))
-
-        action = ActionType.MODIFY if is_active else ActionType.ACTIVATE
+        if is_active:
+            action = ActionType.MODIFY
+        else:
+            action = ActionType.ACTIVATE
+        # action = ActionType.MODIFY if is_active else ActionType.ACTIVATE
 
         await update_wise_ad(
             client=client,
