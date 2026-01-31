@@ -530,8 +530,8 @@ async def get_market_prices(client: P2P) -> MarketPrices:
     high = [item for item in filtered if 1.025 <= float(item['price']) <= 1.05]
 
     # Calculate averages with safety checks
-    bot = round(sum(float(i['price']) for i in low) / len(low) - 0.001, 3) if low else 1.02
-    mid = round(sum(float(i['price']) for i in med) / len(med) - 0.001, 3) if med else 1.03
+    bot = round(sum(float(i['price']) for i in low) / len(low), 3) if low else 1.02
+    mid = round(sum(float(i['price']) for i in med) / len(med), 3) if med else 1.03
     top = round(sum(float(i['price']) for i in high) / len(high), 3) if high else 1.04
 
     return MarketPrices(bot=bot, mid=mid, top=top)
@@ -1656,66 +1656,6 @@ async def main():
     db = Database()
     print("✅ Database initialized")
 
-    print("Current balance in USDT:",
-        await get_bybit_balance(client=api)
-          )
-
-
-    print("Wise buy ad details:",
-          await fetch_wise_buy_ad_details(client=api)
-          )
-
-    print("Wise sell ad details:",
-          await fetch_wise_sell_ad_details(client=api)
-          )
-
-    print("Fetch last 20 Pending sell orders:",
-          await fetch_pending_sell_orders(client=api)
-          )
-
-    print("Fetch last 20 Pending buy orders:",
-          await fetch_pending_buy_orders(client=api)
-          )
-
-    # print(await api.qr_upload(client=api, upload_file="C:/Users/Kirill/Desktop/P2P_API/ByBit/Bybit_P2P_Test/qr.jpg", orderId='2002879935441309696'))
-
-    # print(await qr_upload(client=api))
-
-    print("Chat message before:",
-          await get_chat_message(client=api)
-          )
-
-
-    """NEED to fix this!"""
-    print("Sell order Info:",
-          await get_pending_sell_order_details(client=api)
-          )
-
-    print("Buy order Info:",
-          await get_pending_buy_order_details(client=api)
-          )
-
-
-    """NEED to fix this!"""
-
-    print("Test order details", await api.get_order_details(
-        # orderId="1993151227714883584"
-        orderId = "2002879935441309696"
-    ))
-
-    # 8. Get Pending Orders
-    print("Pending orders:", await api.get_pending_orders(
-        side=0,
-        page=1,
-        size=10,
-    )
-          )
-
-    # 9. Get counterparty info
-    print("get info:", await api.get_counterparty_info(
-        originalUid="177871751",
-        orderId="1992070819939557376"
-    ))
 
     # Add timeout and connection limits to prevent resource leaks
     timeout = httpx.Timeout(30.0, connect=10.0)
