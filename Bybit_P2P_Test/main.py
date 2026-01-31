@@ -530,9 +530,9 @@ async def get_market_prices(client: P2P) -> MarketPrices:
     high = [item for item in filtered if 1.025 <= float(item['price']) <= 1.05]
 
     # Calculate averages with safety checks
-    bot = round(sum(float(i['price']) for i in low) / len(low) - 0.001, 3) if low else 1.015
-    mid = round(sum(float(i['price']) for i in med) / len(med) - 0.001, 3) if med else 1.025
-    top = round(sum(float(i['price']) for i in high) / len(high) - 0.001, 3) if high else 1.04
+    bot = round(sum(float(i['price']) for i in low) / len(low) - 0.001, 3) if low else 1.02
+    mid = round(sum(float(i['price']) for i in med) / len(med) - 0.001, 3) if med else 1.03
+    top = round(sum(float(i['price']) for i in high) / len(high), 3) if high else 1.04
 
     return MarketPrices(bot=bot, mid=mid, top=top)
 
@@ -673,7 +673,7 @@ async def fetch_pending_sell_orders(client: P2P):
 
     return result
 
-"""NEED THIS FUNC ONLY TO FETCH RECIPIENT'S DATA, FOR paymentType PLEASE REFER TO 'get_pending_sell_order_details()'"""
+
 async def fetch_pending_buy_orders(client: P2P):
     orders_raw = await client.get_pending_orders(
         side=OrderSide.BUY,
