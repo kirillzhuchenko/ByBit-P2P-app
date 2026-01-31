@@ -1594,7 +1594,54 @@ def _process_buy_orders(buy_orders: list, outgoing_transfers: list, db: Database
                     )
 
 
-# Update the main loop to include database
+async def ad_management_loop(api, wise_client, profile_id):
+    """
+    Independent async loop that runs ad_management every 5 minutes.
+    Runs concurrently with the main loop to reduce API calls.
+    """
+    print("🔄 Starting independent ad management loop (5-minute interval)...")
+
+    consecutive_errors = 0
+    max_consecutive_errors = 3
+
+    while True:
+        try:
+            # Get current Wise USD balance
+            current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
+
+            # Run ad management
+            await ad_management(api, current_wise_usd)
+
+            # Reset error counter on success
+            consecutive_errors = 0
+
+            # Wait 5 minutes before next run
+            await asyncio.sleep(300)  # 300 seconds = 5 minutes
+
+        except Exception as e:
+            consecutive_errors += 1
+            print(f"\n❌ Error in ad_management_loop (attempt {consecutive_errors}/{max_consecutive_errors})")
+            print(f"   Error: {e}")
+
+            send_telegram_message(
+                f"⚠️ Ad Management Loop Error (attempt {consecutive_errors}/{max_consecutive_errors})\n"
+                f"Error: {str(e)}"
+            )
+
+            if consecutive_errors >= max_consecutive_errors:
+                send_telegram_message(
+                    f"🛑 CRITICAL ERROR in Ad Management\n"
+                    f"Ad management loop failed {max_consecutive_errors} times consecutively\n"
+                    f"Continuing main loop but ads may not update properly"
+                )
+                # Don't raise - just keep trying after longer delay
+                await asyncio.sleep(600)  # Wait 10 minutes after critical error
+                consecutive_errors = 0  # Reset to try again
+            else:
+                # Wait 1 minute before retry
+                await asyncio.sleep(60)
+
+
 async def main():
     api = P2P(
         testnet=False,
@@ -1691,80 +1738,96 @@ async def main():
         print(f"\n👤 Using BUSINESS Profile ID: {profile_id}")
         print("🔍 Starting continuous verification loop...\n")
 
+        # NEW: Start the independent ad_management loop as a background task
+        ad_management_task = asyncio.create_task(
+            ad_management_loop(api, wise_client, profile_id)
+        )
+        print("✅ Ad management background task started (runs every 5 minutes)\n")
+
         last_cleanup = datetime.now()
         consecutive_errors = 0
         max_consecutive_errors = 5
 
-        while True:
-            try:
+        try:
+            while True:
+                try:
 
-                await send_payment_instructions(api, db)
+                    await send_payment_instructions(api, db)
 
-                current_wise_usd = await get_wise_balance_value(wise_client, profile_id, "USD")
-                await ad_management(api, current_wise_usd)
+                    # REMOVED: ad_management call from here
+                    # It now runs independently every 5 minutes via ad_management_task
 
-                """Good for representation only, no need to keep it"""
-                await display_balance_and_transactions(wise_client, profile_id, "USD")
+                    """Good for representation only, no need to keep it"""
+                    await display_balance_and_transactions(wise_client, profile_id, "USD")
 
-                await verify_transfer(
-                    client=api,
-                    wise_client=wise_client,
-                    profile_id=profile_id,
-                    db=db,
-                    currency="USD"
-                )
-
-                # Display database statistics
-                stats = db.get_statistics()
-                print(f"\n📊 Database Stats: {stats['total_matches']} total | "
-                      f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified | "
-                      f"{stats['fraud_orders']} fraud")
-                print(f"   Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
-
-                # Daily cleanup
-                if (datetime.now() - last_cleanup).days >= 1:
-                    print("\n🗑️ Running daily cleanup...")
-
-                    unverified_count = len(db.get_unverified_orders())
-                    if unverified_count > 0:
-                        deleted = db.delete_unverified_orders()
-                        print(f"   🗑️ Deleted {deleted} unverified orders")
-
-                    old_count = db.get_old_matches_count(days=30)
-                    if old_count > 0:
-                        archived = db.archive_old_matches(days=30)
-                        print(f"   📦 Archived {archived} old verified orders")
-
-                    last_cleanup = datetime.now()
-
-                # Reset error counter on successful iteration
-                consecutive_errors = 0
-
-            except Exception as e:
-                consecutive_errors += 1
-                print(f"\n❌ Error in main loop (attempt {consecutive_errors}/{max_consecutive_errors})")
-                print(f"   Error: {e}")
-
-                send_telegram_message(
-                    f"⚠️ Main Loop Error (attempt {consecutive_errors}/{max_consecutive_errors})\n"
-                    f"Error: {str(e)}"
-                )
-
-                if consecutive_errors >= max_consecutive_errors:
-                    send_telegram_message(
-                        f"🛑 CRITICAL ERROR\n"
-                        f"Main loop failed {max_consecutive_errors} times consecutively\n"
-                        f"Bot stopping to prevent infinite error loop"
+                    await verify_transfer(
+                        client=api,
+                        wise_client=wise_client,
+                        profile_id=profile_id,
+                        db=db,
+                        currency="USD"
                     )
-                    raise
 
-                # Wait longer after error
-                print(f"⏳ Waiting 60 seconds before retry...\n")
-                await asyncio.sleep(60)
-                continue
+                    # Display database statistics
+                    stats = db.get_statistics()
+                    print(f"\n📊 Database Stats: {stats['total_matches']} total | "
+                          f"{stats['verified_orders']} verified | {stats['unverified_orders']} unverified | "
+                          f"{stats['fraud_orders']} fraud")
+                    print(f"   Buy: ${stats['total_buy_volume']:.2f} | Sell: ${stats['total_sell_volume']:.2f}")
 
-            # Normal delay between iterations
-            await asyncio.sleep(30)
+                    # Daily cleanup
+                    if (datetime.now() - last_cleanup).days >= 1:
+                        print("\n🗑️ Running daily cleanup...")
+
+                        unverified_count = len(db.get_unverified_orders())
+                        if unverified_count > 0:
+                            deleted = db.delete_unverified_orders()
+                            print(f"   🗑️ Deleted {deleted} unverified orders")
+
+                        old_count = db.get_old_matches_count(days=30)
+                        if old_count > 0:
+                            archived = db.archive_old_matches(days=30)
+                            print(f"   📦 Archived {archived} old verified orders")
+
+                        last_cleanup = datetime.now()
+
+                    # Reset error counter on successful iteration
+                    consecutive_errors = 0
+
+                except Exception as e:
+                    consecutive_errors += 1
+                    print(f"\n❌ Error in main loop (attempt {consecutive_errors}/{max_consecutive_errors})")
+                    print(f"   Error: {e}")
+
+                    send_telegram_message(
+                        f"⚠️ Main Loop Error (attempt {consecutive_errors}/{max_consecutive_errors})\n"
+                        f"Error: {str(e)}"
+                    )
+
+                    if consecutive_errors >= max_consecutive_errors:
+                        send_telegram_message(
+                            f"🛑 CRITICAL ERROR\n"
+                            f"Main loop failed {max_consecutive_errors} times consecutively\n"
+                            f"Bot stopping to prevent infinite error loop"
+                        )
+                        raise
+
+                    # Wait longer after error
+                    print(f"⏳ Waiting 60 seconds before retry...\n")
+                    await asyncio.sleep(60)
+                    continue
+
+                # Normal delay between iterations (still 30 seconds for main loop)
+                await asyncio.sleep(30)
+
+        finally:
+            # Clean up the ad management task when main loop exits
+            print("\n🛑 Cancelling ad management task...")
+            ad_management_task.cancel()
+            try:
+                await ad_management_task
+            except asyncio.CancelledError:
+                print("✅ Ad management task cancelled")
 
 
 asyncio.run(main())
