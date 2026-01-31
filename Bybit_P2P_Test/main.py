@@ -1617,6 +1617,7 @@ async def ad_management_loop(api, wise_client, profile_id):
 
             # Wait 5 minutes before next run
             await asyncio.sleep(300)  # 300 seconds = 5 minutes
+            print("awoken")
 
         except Exception as e:
             consecutive_errors += 1
